@@ -214,3 +214,29 @@ class Rendering(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SignatureInputs(unittest.TestCase):
+    """`status` and `audit verify` hand the inspector the same inputs for a signed ledger."""
+
+    def _target(self, root: Path) -> "render.Target":
+        from arhugula_kit import render
+        state = root / "state"
+        (state / "state-ledger").mkdir(parents=True)
+        return render.Target("proj", root, state, "proj", (), root / "proj.toml")
+
+    def test_a_ledger_signed_from_its_first_entry_gets_the_key_map_record_and_tenant(self):
+        import tempfile
+        from arhugula_kit import audit_keys, render
+        from arhugula_kit.layout import Home
+        with tempfile.TemporaryDirectory() as scratch:
+            home = Home(Path(scratch))
+            target = self._target(Path(scratch))
+            self.assertEqual(audit_keys.signature_inputs(home, target), [])
+            home.keys.mkdir(parents=True, exist_ok=True)
+            (home.keys / audit_keys.KEY_MAP).write_text("{}")
+            self.assertEqual(audit_keys.signature_inputs(home, target), [])  # no cutover record yet
+            render.cutover_record(target).write_text("{}")
+            words = [str(word) for word in audit_keys.signature_inputs(home, target)]
+            self.assertEqual(words[0::2], ["--signing-key-map", "--cutover-record", "--expected-tenant"])
+            self.assertEqual(words[-1], "proj")

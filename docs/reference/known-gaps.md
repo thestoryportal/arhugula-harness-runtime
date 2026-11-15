@@ -150,11 +150,15 @@ This version does not change them.
 
 ## Reported upstream
 
-Three limits are reported to the upstream repository, `thestoryportal/arhugula-harness`.
+Six limits are reported to the upstream repository, `thestoryportal/arhugula-harness`.
+One more was fixed there: the runtime refused Codex's reply (pull request 1753), and the kit pins the fixed commit.
 
-- **The lead-directed worker plan.** Upstream issue: (number added when filed)
-- **The eval judge or scored suite.** Upstream issue: (number added when filed)
-- **A `stdio` and an HTTP MCP client together.** Upstream issue: (number added when filed)
+- **The lead-directed worker plan.** Upstream issue 1754.
+- **The eval judge or scored suite.** Upstream issue 1755.
+- **A `stdio` and an HTTP MCP client together.** Upstream issue 1756.
+- **A thinking level outside the model name.** Upstream issue 1757.
+- **An OpenAI-compatible endpoint as a provider.** Upstream issue 1758.
+- **A gate must be answered within the step deadline.** Upstream issue 1759.
 
 ## Sources
 

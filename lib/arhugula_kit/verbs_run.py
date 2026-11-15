@@ -10,7 +10,7 @@ import time
 from collections.abc import Sequence
 from pathlib import Path
 
-from arhugula_kit import deploy, providers, render, runtime, servedby, workflows
+from arhugula_kit import audit_keys, deploy, providers, render, runtime, servedby, workflows
 from arhugula_kit.common import PROJECT_ARG, exec_logged, harness_command, resolve_manifest, say, table, target_of
 from arhugula_kit.errors import Exit, KitError
 from arhugula_kit.spec import Spec
@@ -160,6 +160,7 @@ def _status(args: argparse.Namespace) -> int:
             "--runtime-config", target.config_file,
             "--pause-journal-dir", deployment.home.pause_journal,
             "--last-n", str(args.last),
+            *audit_keys.signature_inputs(deployment.home, target),
             *(["--json"] if args.json else []),
         ],
         cwd=target.repository,

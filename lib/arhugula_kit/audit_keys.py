@@ -9,6 +9,7 @@ limit*); the kit makes the keys through the runtime's own cryptography library.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from arhugula_kit import render, runtime
 from arhugula_kit.layout import Home
@@ -59,3 +60,16 @@ def generate(home: Home) -> list[str]:
         f"wrote the two public keys and {keys / KEY_MAP}: what `audit verify --signatures` reads.",
         "Back up both private keys; they are in no archive.",
     ]
+
+
+def signature_inputs(home: Home, target: render.Target) -> list[str | Path]:
+    """What the inspector needs to verify a ledger signed from its first entry; empty otherwise.
+
+    With a cutover record configured, the inspector accepts nothing less than the full
+    check, so every verb that reads such a ledger through it must hand these over.
+    """
+    key_map, record = home.keys / KEY_MAP, render.cutover_record(target)
+    if not (key_map.is_file() and record.is_file()):
+        return []
+    tenant: list[str | Path] = ["--expected-tenant", target.tenant_id] if target.tenant_id else []
+    return ["--signing-key-map", key_map, "--cutover-record", record, *tenant]

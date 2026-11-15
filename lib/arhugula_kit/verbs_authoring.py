@@ -532,7 +532,8 @@ def _audit_verify(args: argparse.Namespace) -> int:
     # A ledger signed from its first entry is always verified in full: with its cutover
     # record configured, the runtime's inspector accepts nothing less. Any other ledger
     # gets the hash-chain check, and `--signatures` is refused for it with the reason.
-    full = key_map.is_file() and record.is_file()
+    signing = audit_keys.signature_inputs(deployment.home, target)
+    full = bool(signing)
     if args.signatures and not full:
         if not key_map.is_file():
             raise KitError(Exit.PRECONDITION, f"there is no key map at {key_map}", fix="arhugula audit keygen")
@@ -544,10 +545,7 @@ def _audit_verify(args: argparse.Namespace) -> int:
             fix="check the hash chain with `arhugula audit verify`; turn signing on before a "
             "project's first run to have it verify in full",
         )
-    if full:
-        words += ["--signing-key-map", key_map, "--cutover-record", record]
-        if target.tenant_id:
-            words += ["--expected-tenant", target.tenant_id]
+    words += signing
     code = runtime.exec_tool(deployment.home.harness_inspect, words, cwd=target.repository)
     checked = "the hash chain is intact and every entry's signature verified" if full else (
         "the hash chain is intact (this ledger carries no cutover record, so signatures were not checked)")
