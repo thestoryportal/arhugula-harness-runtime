@@ -273,8 +273,8 @@ Three phrases recur in the last column:
 | `inter_step_data_flow` | Each step receives the most recently recorded step output. | Feature `data-flow` |
 | `engine_output_replay` | A resumed run gets back the outputs of steps that already ran. | Feature `engine-replay` |
 | `effect_fencing` | A tool step that is not safe to repeat runs at most once across retries and resumes. | Feature `effect-fencing` |
-| `step_dispatch_timeout_seconds` | How long one whole step may take, with a wait at an approval gate included; 30 seconds unless set. A provider's own `timeout_seconds` bounds one call inside the step: see [providers](providers.md#enable-disable-and-tune-a-provider). | Feature `deadlines`; `config set` |
-| `drain_timeout_seconds` | How long a whole workflow run may take, all steps together; 60 seconds unless set. After that the runtime stops waiting and ends the run with status `drained` and `RT-FAIL-DRAIN-TIMEOUT`. It does not cancel the step in flight. | Feature `deadlines`; `config set` |
+| `step_dispatch_timeout_seconds` | How long one whole step may take, with a wait at an approval gate included; 960 seconds unless set (*kit extension*). A provider's own `timeout_seconds` bounds one call inside the step: see [providers](providers.md#enable-disable-and-tune-a-provider). | Feature `deadlines`; `config set` |
+| `drain_timeout_seconds` | How long a whole workflow run may take, all steps together; 3600 seconds unless set (*kit extension*). After that the runtime stops waiting and ends the run with status `drained` and `RT-FAIL-DRAIN-TIMEOUT`. It does not cancel the step in flight. | Feature `deadlines`; `config set` |
 | `sub_agent_dispatch_max_workers` | How many sub-agent calls may run at once; 256 unless set. | Feature `concurrency`; `config set` |
 
 ### Gates, tools and validators
@@ -387,6 +387,7 @@ arhugula config unset drain_timeout_seconds
 ```
 
 A value you store wins over a named feature that sets the same key, because stored settings are the later layer.
+For the two deadline keys, `config unset` returns the kit's values, 960 and 3600 seconds, not the runtime's own defaults.
 
 ## Switch named features on and off
 
@@ -416,7 +417,7 @@ off    audit-signing           Audit signing                              the tw
 off    collector-tuning        Span store tuning                          nothing
 off    concurrency             Bounded sub-agent concurrency              nothing
 off    data-flow               Inter-step data flow                       nothing
-off    deadlines               Longer deadlines                           nothing
+off    deadlines               Tighter deadlines                          nothing
 off    durable-pause           Durable pause and resume                   to answer `hold` at a gate, also a notification endpoint: arhugula webhook set <url>
 off    effect-fencing          Effect fencing                             nothing
 off    embedding-routing       Offline embedding routing                  the embedding model at <home>/models/bge-small-en-v1.5 with its SHA256SUMS (docs/configure.md, "Offline embedding routing")
@@ -445,17 +446,17 @@ arhugula feature show deadlines
 ```
 
 ```text
-deadlines: Longer deadlines
+deadlines: Tighter deadlines
 state:  off
 needs:  nothing
 
-Raises the per-step dispatch deadline from 30 to 120 seconds and the drain deadline from 60 to 120 seconds, for slow local models. Set other values with `arhugula config set step_dispatch_timeout_seconds <seconds>`.
+Tightens the deadlines for unattended runs that have no approval gate: one step may take 120 seconds and a whole run 600 seconds. Without this feature the kit sets 960 and 3600 seconds, so that a person has time to answer a gate. Set other values with `arhugula config set step_dispatch_timeout_seconds <seconds>`.
 
 It merges this into every generated config:
 
 [runtime]
 step_dispatch_timeout_seconds = 120.0
-drain_timeout_seconds = 120.0
+drain_timeout_seconds = 600.0
 ```
 
 Switch it on, and off again when you no longer want it:
@@ -546,9 +547,9 @@ Switch it on with `arhugula feature enable data-flow`. It adds:
 inter_step_data_flow = true
 ```
 
-### `deadlines`: Longer deadlines
+### `deadlines`: Tighter deadlines
 
-Raises the per-step dispatch deadline from 30 to 120 seconds and the drain deadline from 60 to 120 seconds, for slow local models. Set other values with `arhugula config set step_dispatch_timeout_seconds <seconds>`.
+Tightens the deadlines for unattended runs that have no approval gate: one step may take 120 seconds and a whole run 600 seconds. Without this feature the kit sets 960 and 3600 seconds, so that a person has time to answer a gate. Set other values with `arhugula config set step_dispatch_timeout_seconds <seconds>`.
 
 Needs: nothing
 
@@ -557,7 +558,7 @@ Switch it on with `arhugula feature enable deadlines`. It adds:
 ```toml
 [runtime]
 step_dispatch_timeout_seconds = 120.0
-drain_timeout_seconds = 120.0
+drain_timeout_seconds = 600.0
 ```
 
 ### `durable-pause`: Durable pause and resume
@@ -807,7 +808,7 @@ With a setting off, the gate asks you in the terminal. A run without a terminal 
 ```
 
 Change a setting with `arhugula policy set <setting> <on|off>`, for example `arhugula policy set solo-floor-auto off`.
-Answer a gate that asks within the step deadline, 30 seconds unless set: see `step_dispatch_timeout_seconds` in [the capability matrix](#capability-matrix).
+Answer a gate that asks within 15 minutes: the gate waits 900 seconds, and the kit's step deadline is 960 seconds. See `step_dispatch_timeout_seconds` in [the capability matrix](#capability-matrix).
 [Run and write workflows](workflows.md) shows a gate that asks.
 
 ## Offline embedding routing

@@ -152,9 +152,9 @@ ledger:    21b9f014c2e4e7d5b32c295e83f0660bde95e650eff0feef88ad4e565f2e253b
 The gate asks only when the run has a terminal. A run with no terminal rejects the gate with `noninteractive: no operator terminal` (*upstream limit*). An answer the gate does not recognise also rejects it.
 If you stay silent, the gate waits for its configured timeout, or for 900 seconds when none is set.
 
-The wait is part of the step, so the step deadline and the run limit apply to it too: 30 and 60 seconds unless set.
-So at default settings you must answer within 30 seconds, and the 900 seconds are not reached.
-A gate of the same example that was answered `approve` after 45 seconds ended the run with exit code 1 (*witnessed*):
+The runtime counts the wait as part of the step, so the step deadline and the run limit apply to it too (*upstream limit*, upstream issue 1759).
+The runtime's own defaults are 30 seconds for a step and 60 seconds for a run, so at those defaults you must answer within 30 seconds.
+A gate of the same example that was answered `approve` after 45 seconds, with the runtime's own defaults, ended the run with exit code 1 (*witnessed*):
 
 ```text
 status:    failed
@@ -164,8 +164,13 @@ failure:   RT-FAIL-WORKFLOW
 detail:    workflow execution returned status='failed' with fail_class='step-failure: RT-FAIL-STEP-DISPATCH-TIMEOUT: step dispatch exceeded 30.0s bound'
 ```
 
-Raise both before a run whose gate may wait longer: see `step_dispatch_timeout_seconds` and `drain_timeout_seconds` in [the capability matrix](configure.md#capability-matrix).
-`arhugula policy set <setting> off` prints a note with the same deadline.
+The kit does not use those defaults (*kit extension*). It writes a step deadline of 960 seconds and a run limit of 3600 seconds into every generated config.
+The gate's own wait is 900 seconds, so you have up to 15 minutes to answer a gate.
+The same gate, answered `approve` after 45 seconds with the kit's limits, ended the run with `status: completed` (*witnessed*).
+One provider call inside a step stays bounded by that provider's own `timeout_seconds`, 120 seconds unless set.
+
+Change the limits with `step_dispatch_timeout_seconds` and `drain_timeout_seconds`: see [the capability matrix](configure.md#capability-matrix).
+`arhugula policy set <setting> off` prints a note with the step deadline.
 
 ## Put a gate on hold and answer it later
 

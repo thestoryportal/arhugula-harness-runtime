@@ -379,7 +379,7 @@ A placement has up to four fields.
 | `position` | one of the three positions; required |
 | `tool_filter` | for `pre-action`: the exact tool names that the gate covers; patterns are refused |
 | `cascade_policy` | replaces the workload class's default cascade policy: `pause`, `proceed` or `cascade-cancel` |
-| `timeout` | how long the gate waits for an answer, in milliseconds; without it, the gate waits 900 seconds. The step deadline and the run limit, 30 and 60 seconds unless set, end the run sooner: see [the capability matrix](configure.md#capability-matrix) |
+| `timeout` | how long the gate waits for an answer, in milliseconds; without it, the gate waits 900 seconds. The kit sets the step deadline to 960 seconds and the run limit to 3600 seconds, so a gate can wait its full 900 seconds unless you lowered them: see [the capability matrix](configure.md#capability-matrix) |
 
 A gate does not always ask.
 The deployment's policy lets some calls pass without asking; see it with `arhugula policy show`:
@@ -433,7 +433,7 @@ Do these steps in order.
    arhugula run <home>/kit/examples/workflows/gated-tool.toml
    ```
 
-6. **Answer the gate.** The run stops at the first step and shows the call it is about to make. Type `approve` within the step deadline, 30 seconds unless set. After that the run fails with `RT-FAIL-STEP-DISPATCH-TIMEOUT`; [Enable, disable and tune a provider](providers.md#enable-disable-and-tune-a-provider) shows how to raise the deadline.
+6. **Answer the gate.** The run stops at the first step and shows the call it is about to make. Type `approve` within 15 minutes: the gate waits 900 seconds, and the kit's step deadline is 960 seconds. After the step deadline the run fails with `RT-FAIL-STEP-DISPATCH-TIMEOUT`; [the capability matrix](configure.md#capability-matrix) shows how to change the deadline.
 
 The prompt and the result of an approved run (*witnessed*), with the progress lines left out:
 

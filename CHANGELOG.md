@@ -28,7 +28,7 @@ The list follows the feature groups of [the kit overview](README.md).
 - **Codex at this pin.** Three runs with `--provider codex` were each served by Codex, with no error (*witnessed*). Upstream pull request 1753 fixed it, and the kit pins the fixed commit.
 - **Routing.** One fallback chain serves every step, with overrides for one run and verbs for finer routing.
 - **Topologies and multi-agent execution.** The six upstream topologies, and `arhugula workflow new` to create a manifest from one.
-- **Approval gates.** Gates that ask at the terminal, and a policy for what a gate approves without asking.
+- **Approval gates.** Gates that ask at the terminal, and a policy for what a gate approves without asking. The kit sets a step deadline of 960 seconds and a run limit of 3600 seconds in every generated config (*kit extension*). A gate can then wait its own 900 seconds. The runtime's own 30 and 60 seconds failed a gate answered after 45 seconds (*upstream limit*, *witnessed*).
 - **Validators.** Verbs to bind a validator class to a step and to test the bindings.
 - **Prompts and skills.** Versioned prompts, skills for each project, and a hook that activates skills.
 - **Memory.** Memory for each project, with your review before a captured memory is reused.

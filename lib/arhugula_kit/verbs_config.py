@@ -873,9 +873,10 @@ def _policy_set(args: argparse.Namespace) -> int:
     deploy.apply(deployment, overlay.set_value(deployment.spec, "", path, args.state == "on"))
     say(f"{args.setting}: {args.state}")
     if args.state == "off":
-        say("note: answer a gate within the step deadline (30 seconds unless set). After that the "
-            "run fails with RT-FAIL-STEP-DISPATCH-TIMEOUT. For more time: arhugula config set "
-            "step_dispatch_timeout_seconds <seconds>, and drain_timeout_seconds for the whole run.")
+        say(f"note: a gate now asks at the terminal. Answer within the step deadline: "
+            f"{render.STEP_DEADLINE_SECONDS:g} seconds unless you changed it (`arhugula config show`). "
+            "After that the run fails with RT-FAIL-STEP-DISPATCH-TIMEOUT. Change it: arhugula config "
+            "set step_dispatch_timeout_seconds <seconds>, and drain_timeout_seconds for the whole run.")
     return Exit.OK
 
 

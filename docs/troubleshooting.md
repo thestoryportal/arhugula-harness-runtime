@@ -236,9 +236,9 @@ RT-FAIL-FALLBACK-EXHAUSTED: fallback chain exhausted after candidate <provider>:
         exit 1: detail:    workflow execution returned status='failed' with fail_class='step-failure: RT-FAIL-STEP-DISPATCH-TIMEOUT: step dispatch exceeded 0.01s boun
 ```
 
-- **Cause:** one step took longer than the per-step deadline, `step_dispatch_timeout_seconds`. Slow local models are the usual reason. A wait at an approval gate counts too: a gate answered after 45 seconds failed its run with `step dispatch exceeded 30.0s bound` (*witnessed*).
-- **Fix:** raise the deadline. `arhugula feature enable deadlines` sets it to 120 seconds. `arhugula config set step_dispatch_timeout_seconds <seconds>` sets any value.
-- **Prevent:** `arhugula feature list` shows whether `deadlines` is on. Without it, the deadline is 30 seconds. Raise it before you run a workflow on a slow model.
+- **Cause:** one step took longer than the per-step deadline, `step_dispatch_timeout_seconds`. Slow local models are the usual reason. A wait at an approval gate counts too (*upstream limit*, upstream issue 1759). The kit sets the deadline to 960 seconds, and a gate waits at most 900 seconds, so a gate fails the run only when you lowered the deadline. With the runtime's own default of 30 seconds, a gate answered after 45 seconds failed its run with `step dispatch exceeded 30.0s bound` (*witnessed*).
+- **Fix:** raise the deadline. `arhugula config set step_dispatch_timeout_seconds <seconds>` sets any value, and `arhugula config unset step_dispatch_timeout_seconds` returns the kit's 960 seconds. The feature `deadlines`, when on, lowers the deadline to 120 seconds for runs with no gate. Switch it off with `arhugula feature disable deadlines` before a run that has a gate.
+- **Prevent:** `arhugula feature list` shows whether `deadlines` is on. Without it, the deadline is 960 seconds. Raise it before you run a workflow on a slow model.
 - **Status:** *witnessed* in `doctor --self-test`.
 
 ### `RT-FAIL-VALIDATOR-STAGE-MATERIALIZE`: a validator class cannot be loaded

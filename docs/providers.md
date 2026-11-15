@@ -334,20 +334,20 @@ So the verb accepts no other key.
 It prints, for example, `claude_code: timeout_seconds is back to the value the kit generates`.
 The kit sets `timeout_seconds` to 120, and it sets `auth_check` to `true`.
 
-For example, give Claude Code five minutes for each call:
+For example, give Claude Code twenty minutes for each call:
 
 ```sh
-arhugula provider set claude_code timeout_seconds 300
+arhugula provider set claude_code timeout_seconds 1200
 ```
 
 Two more limits bound the same call, and each applies on its own.
-The step deadline `step_dispatch_timeout_seconds` bounds one whole step: 30 seconds unless set.
-The run limit `drain_timeout_seconds` bounds the whole run: 60 seconds unless set.
-So a call gets its five minutes only when both are longer, for example:
+The step deadline `step_dispatch_timeout_seconds` bounds one whole step: the kit sets 960 seconds (*kit extension*).
+The run limit `drain_timeout_seconds` bounds the whole run: the kit sets 3600 seconds (*kit extension*).
+So a call gets its twenty minutes only when both are longer, and the step deadline of 960 seconds is shorter. Raise it, and the run limit with it, for example:
 
 ```sh
-arhugula config set step_dispatch_timeout_seconds 330
-arhugula config set drain_timeout_seconds 360
+arhugula config set step_dispatch_timeout_seconds 1260
+arhugula config set drain_timeout_seconds 3660
 ```
 
 [The capability matrix](configure.md#capability-matrix) describes both keys.

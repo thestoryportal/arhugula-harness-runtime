@@ -228,6 +228,14 @@ def _cli_entry(provider: providers.Provider, spec: Spec, home: Home, required: s
     return {**entry, **spec.provider_settings.get(provider.name, {})}
 
 
+# The runtime counts a person's wait at an approval gate against the step deadline (30
+# seconds unless set) and the run limit (60 seconds unless set), so a gate could not be
+# answered in time. The gate's own wait is 900 seconds; both limits sit above it. A hung
+# provider call stays bounded by that provider's own `timeout_seconds`.
+STEP_DEADLINE_SECONDS = 960.0
+RUN_LIMIT_SECONDS = 3600.0
+
+
 def _base(spec: Spec, home: Home, target: Target) -> dict[str, Any]:
     """The config the init answers decide, before any feature or overlay."""
     required = {spec.primary, spec.fallback} - {""}
@@ -258,6 +266,8 @@ def _base(spec: Spec, home: Home, target: Target) -> dict[str, Any]:
         "default_topology": "single-threaded-linear",
         "enabled_provider_names": ordered,
         "mcp_clients": [],
+        "step_dispatch_timeout_seconds": STEP_DEADLINE_SECONDS,
+        "drain_timeout_seconds": RUN_LIMIT_SECONDS,
         "pidfile_path": str(home.run / f"{target.name or 'default'}.pid"),
         "memory": {
             "enabled": False,

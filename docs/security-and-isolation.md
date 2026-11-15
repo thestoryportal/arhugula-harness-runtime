@@ -343,7 +343,7 @@ arhugula policy set solo-floor-auto off
 
 With `solo-floor-auto` off, a gated tool call asks at the terminal (*witnessed*).
 The answer `approve` let the run complete.
-Answer within the step deadline, 30 seconds unless set: [Enable, disable and tune a provider](providers.md#enable-disable-and-tune-a-provider) shows how to raise it.
+Answer within 15 minutes: the gate waits 900 seconds, and the kit's step deadline is 960 seconds. [Operate: answer a gate](operate.md#answer-an-approval-gate-at-the-terminal) explains the limits.
 
 Four limits apply:
 

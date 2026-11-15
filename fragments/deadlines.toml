@@ -1,7 +1,7 @@
-#: title = Longer deadlines
-#: summary = Raises the per-step dispatch deadline from 30 to 120 seconds and the drain deadline from 60 to 120 seconds, for slow local models. Set other values with `arhugula config set step_dispatch_timeout_seconds <seconds>`.
+#: title = Tighter deadlines
+#: summary = Tightens the deadlines for unattended runs that have no approval gate: one step may take 120 seconds and a whole run 600 seconds. Without this feature the kit sets 960 and 3600 seconds, so that a person has time to answer a gate. Set other values with `arhugula config set step_dispatch_timeout_seconds <seconds>`.
 #: needs = nothing
 
 [runtime]
 step_dispatch_timeout_seconds = 120.0
-drain_timeout_seconds = 120.0
+drain_timeout_seconds = 600.0
