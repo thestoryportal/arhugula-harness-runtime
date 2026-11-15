@@ -7,7 +7,9 @@ into one message, its fix, and the documented exit code.
 from __future__ import annotations
 
 import argparse
+import signal
 import sys
+import traceback
 from collections.abc import Sequence
 
 from arhugula_kit.errors import Exit, KitError
@@ -82,6 +84,9 @@ def _describe(verb: Verb) -> str:
 
 
 def main(argv: Sequence[str]) -> int:
+    # Output piped into `head` or a pager that exits early ends this program quietly, as
+    # it does for any Unix tool, in place of a Python traceback.
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
     verbs = all_verbs()
     parser = build_parser(verbs)
     args, passthrough = parser.parse_known_args(list(argv))
@@ -107,3 +112,10 @@ def main(argv: Sequence[str]) -> int:
     except KeyboardInterrupt:
         print(f"{PROGRAM}: interrupted", file=sys.stderr)
         return 130
+    except Exception:
+        # Not a failure the kit foresaw: show where it came from and use the code the
+        # exit-code contract gives a kit defect, never the code of a failed workflow.
+        traceback.print_exc()
+        print(f"{PROGRAM}: this is a defect in the kit; please file an issue with the lines above",
+              file=sys.stderr)
+        return int(Exit.INTERNAL)

@@ -1,0 +1,17 @@
+{
+  "_about": "An EXAMPLE answers file for `init --answers`. Every path here is a placeholder: replace /absolute/path/to/... with real paths on your machine. `init --questions-json` prints the questions with the defaults computed for your machine.",
+  "home": "/absolute/path/to/arhugula",
+  "providers": ["claude_code", "ollama"],
+  "primary": "claude_code",
+  "fallback": "ollama",
+  "ollama_model": "llama3.2:3b",
+  "ollama_host": "http://127.0.0.1:11434",
+  "project": "",
+  "workloads": ["pipeline-automation", "software-engineering", "research", "content-creation"],
+  "features": ["memory"],
+  "memory_mode": "packet+tools",
+  "observability": {"enabled": true, "engine": "kit", "lima_home": "", "instance": ""},
+  "isolation_tier3": false,
+  "forbidden_roots": [],
+  "smoke": true
+}

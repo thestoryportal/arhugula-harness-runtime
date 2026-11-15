@@ -1,0 +1,32 @@
+# An example workflow with an approval gate (docs/workflows.md).
+#
+# Step 1 calls the tool `notes.write`; the `hitl_placements` line puts a gate in front of
+# it, so a person approves or rejects the call. Step 2 calls `notes.read`, which no
+# placement names, so it runs without asking. Both tools come from
+# examples/mcp/notes_server.py, connected with `arhugula mcp add`.
+version = 1
+
+[workflow]
+workflow_id = "example-gated-tool"
+workload_class = "software-engineering"
+persona_tier = "solo-developer"
+engine_class = "pure-pattern-no-engine"
+topology_pattern = "single-threaded-linear"
+layer_budgets = []
+hitl_placements = [{ position = "pre-action", tool_filter = ["notes.write"] }]
+per_step_overrides = {}
+fallback_chain = { primary = { provider = "ollama", model = "llama3.2:3b", family = "local_open_weight" }, same_family = [], cross_family = [] }
+
+[default_model_binding]
+provider = "ollama"
+model = "llama3.2:3b"
+
+[[steps]]
+step_id = "write-note"
+step_kind = "tool-step"
+step_payload = { tool_id = "notes.write", tool_args = { value = "approved by a person" } }
+
+[[steps]]
+step_id = "read-note"
+step_kind = "tool-step"
+step_payload = { tool_id = "notes.read", tool_args = { value = "no gate here" } }

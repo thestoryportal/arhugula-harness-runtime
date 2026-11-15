@@ -16,10 +16,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TextIO
 
-from arhugula_kit import detect, providers, spec
+from arhugula_kit import detect, lima, providers, spec
 from arhugula_kit.detect import Machine
 from arhugula_kit.errors import Exit, KitError
-from arhugula_kit.layout import KIT_ROOT
+from arhugula_kit.layout import KIT_ROOT, Home
 
 __all__ = ["FEATURE_LETTERS", "QUESTIONS", "Option", "Question", "ask_all", "complete", "describe"]
 
@@ -60,6 +60,7 @@ class Question:
     prompt: str
     kind: str  # path | multi | choice | text | yesno | engine | paths
     why: str
+    default_doc: str  # the default in words, for docs/install.md; the value itself is computed
     default: Callable[[Machine, Answers], Any]
     parse: Callable[[str, Machine, Answers], Any]
     options: Callable[[Machine, Answers], tuple[Option, ...]] = _no_options
@@ -270,59 +271,103 @@ def _parse_memory_mode(text: str, machine: Machine, answers: Answers) -> str:
 
 # --- 11 observability, 12 isolation -----------------------------------------------------
 
+NO_ENGINE: dict[str, Any] = {"enabled": False, "engine": "none", "lima_home": "", "instance": ""}
+KIT_ENGINE: dict[str, Any] = {"enabled": True, "engine": "kit", "lima_home": "", "instance": ""}
+
+
+def _kit_lima_home(answers: Answers) -> Path:
+    return Home(Path(answers["home"])).lima
+
+
+def _other_instances(machine: Machine, answers: Answers) -> tuple[lima.Instance, ...]:
+    """Lima instances the operator already had (the kit's own VM is not one of them)."""
+    return tuple(i for i in machine.lima_instances if i.lima_home != _kit_lima_home(answers))
+
+
+_LIMA_WANTED = ".".join(str(part) for part in lima.MINIMUM_VERSION[:2])
+
+
+def _lima_usable(machine: Machine) -> bool:
+    return machine.lima_version is not None and machine.lima_version >= lima.MINIMUM_VERSION
+
 
 def _engine_options(machine: Machine, answers: Answers) -> tuple[Option, ...]:
-    return tuple(
+    existing = tuple(
         Option(
             value=f"{instance.lima_home}::{instance.name}",
-            label=f"Lima instance {instance.name}",
-            note=f"{instance.status}, {instance.vm_type}, {instance.cpus} CPU, "
-            f"{instance.memory_bytes // 2**30} GiB, LIMA_HOME={instance.lima_home}",
+            label=f"your existing Lima instance {instance.name}",
+            note=f"{instance.status}, {instance.arch}, {instance.cpus} CPU, "
+            f"{instance.memory_bytes // 2**30} GiB",
         )
-        for instance in machine.lima_instances
+        for instance in _other_instances(machine, answers)
+        if instance.native
+    )
+    return (
+        Option(
+            "kit",
+            "the kit's own virtual machine, built for this machine",
+            f"created under {_kit_lima_home(answers)}; 5 to 10 minutes the first time",
+        ),
+        *existing,
+        Option("n", "no observability tier"),
     )
 
 
 def _default_engine(machine: Machine, answers: Answers) -> dict[str, Any]:
-    if not machine.lima_instances:
-        return {"enabled": False, "lima_home": "", "instance": ""}
-    first = machine.lima_instances[0]
-    return {"enabled": True, "lima_home": str(first.lima_home), "instance": first.name}
+    return dict(KIT_ENGINE) if _lima_usable(machine) else dict(NO_ENGINE)
 
 
 def _parse_engine(text: str, machine: Machine, answers: Answers) -> dict[str, Any]:
     word = text.strip()
     if word.lower() in ("n", "no"):
-        return {"enabled": False, "lima_home": "", "instance": ""}
-    if word.lower() in ("y", "yes"):
-        chosen = _default_engine(machine, answers)
-        if not chosen["enabled"]:
-            raise ValueError(
-                "no Lima instance was found. Give the Lima home that holds the VM as "
-                "`<lima-home>::<instance>`, or answer n"
-            )
-        return chosen
-    lima_home, _, name = word.partition("::")
-    if not name or not Path(lima_home).expanduser().is_dir():
-        raise ValueError("answer y, n, or `<lima-home>::<instance>` with an existing Lima home")
-    return {"enabled": True, "lima_home": str(Path(lima_home).expanduser()), "instance": name}
+        return dict(NO_ENGINE)
+    if not _lima_usable(machine):
+        raise ValueError(
+            f"the tier needs Lima {_LIMA_WANTED} or later, which is not installed (see the "
+            "Lima row of the dependency list above). Answer n now; install Lima and run "
+            "init again to add it"
+        )
+    # `:off` keeps the virtual machine without the trace stack (for isolation tier 3 alone).
+    enabled = not word.lower().endswith(":off")
+    choice = word if enabled else word[: -len(":off")]
+    if choice.lower() in ("y", "yes", "kit"):
+        return {**KIT_ENGINE, "enabled": enabled}
+    lima_home, _, name = choice.partition("::")
+    chosen = [
+        i for i in _other_instances(machine, answers)
+        if i.name == name and i.lima_home == Path(lima_home).expanduser()
+    ]
+    if not chosen:
+        raise ValueError("answer kit, n, or one of the `<lima-home>::<instance>` values shown")
+    if not chosen[0].native:
+        raise ValueError(
+            f"{name} holds a {chosen[0].arch} guest, and this machine is {lima.host_arch()}: "
+            "Lima could only run it by emulating the other CPU. Answer kit to use a VM built "
+            "for this machine"
+        )
+    return {"enabled": enabled, "engine": "existing", "lima_home": str(chosen[0].lima_home), "instance": name}
 
 
 def _engine_notes(machine: Machine, answers: Answers) -> tuple[str, ...]:
     notes = [
         "The stack (OpenTelemetry Collector, Tempo, Grafana) runs inside a Lima virtual "
         "machine's own Docker engine. Docker Desktop is not used.",
+        "To have the virtual machine without the trace stack (for isolation tier 3 alone), "
+        "add `:off`, for example `kit:off`.",
     ]
-    if not machine.lima_instances:
-        notes.append(
-            "No Lima instance was found under $LIMA_HOME or the default Lima home. If your "
-            "VM lives elsewhere, answer `<lima-home>::<instance>`."
-        )
+    if not _lima_usable(machine):
+        notes.append("Lima is not installed, so the only answer available now is n.")
+    notes += [
+        f"Not offered: the Lima instance {i.name} holds a {i.arch} guest. This machine is "
+        f"{lima.host_arch()}, so Lima could only run it by emulation, which is many times slower."
+        for i in _other_instances(machine, answers)
+        if not i.native
+    ]
     return tuple(notes)
 
 
 def _tier_available(machine: Machine, answers: Answers) -> bool:
-    return bool(answers["observability"]["instance"])
+    return answers["observability"]["engine"] != "none"
 
 
 # --- 13 forbidden roots -----------------------------------------------------------------
@@ -356,6 +401,7 @@ QUESTIONS: tuple[Question, ...] = (
         prompt="Deployment home directory? Everything the harness installs and stores lives here.",
         kind="path",
         why="The location is yours to choose. It must not be inside a git checkout.",
+        default_doc="`~/arhugula`, or the directory that already holds this kit clone as `kit/`",
         default=_default_home,
         parse=_parse_home,
     ),
@@ -365,6 +411,7 @@ QUESTIONS: tuple[Question, ...] = (
         prompt="Which providers should be available? Type the letters of each one you want.",
         kind="multi",
         why="Each selected provider is checked in preflight and written into the config.",
+        default_doc="every command-line provider found installed and signed in, plus Ollama when it answers",
         default=_default_providers,
         parse=_parse_providers,
         options=_provider_options,
@@ -376,6 +423,7 @@ QUESTIONS: tuple[Question, ...] = (
         prompt="Default provider for workflows?",
         kind="choice",
         why="The first fallback chain serves every step unless a run overrides it.",
+        default_doc="Claude Code when selected, else Ollama, else the first selected provider; never Codex when another is selected",
         default=_default_primary,
         parse=_parse_primary,
         options=_primary_options,
@@ -386,6 +434,7 @@ QUESTIONS: tuple[Question, ...] = (
         prompt="Fallback provider when the default fails?",
         kind="choice",
         why="A second provider keeps a run going when the first one refuses.",
+        default_doc="Ollama when it is selected and is not the default provider; otherwise none",
         default=_default_fallback,
         parse=_parse_fallback,
         options=_fallback_options,
@@ -396,6 +445,7 @@ QUESTIONS: tuple[Question, ...] = (
         prompt="Ollama model?",
         kind="text",
         why="The model Ollama steps run on. Init offers to pull it when it is absent.",
+        default_doc="`llama3.2:3b`",
         default=lambda machine, answers: providers.by_name("ollama").default_model,
         parse=_parse_text,
         options=_model_options,
@@ -408,6 +458,7 @@ QUESTIONS: tuple[Question, ...] = (
         prompt="Ollama host URL?",
         kind="text",
         why="Asked only when Ollama does not answer at its default address.",
+        default_doc="`http://127.0.0.1:11434`",
         default=lambda machine, answers: machine.ollama_host,
         parse=_parse_text,
         applies=_ollama_unreachable,
@@ -419,6 +470,7 @@ QUESTIONS: tuple[Question, ...] = (
         prompt="Attach a project now? Give the path to a project repository, or press Enter to skip.",
         kind="path",
         why="One install serves many projects. You can attach more later with `project add`.",
+        default_doc="none",
         default=lambda machine, answers: "",
         parse=_parse_project,
     ),
@@ -428,6 +480,7 @@ QUESTIONS: tuple[Question, ...] = (
         prompt="Workload classes to bind? Type the numbers.",
         kind="multi",
         why="All four are needed for the shipped topology examples and for the daemon.",
+        default_doc="all four",
         default=lambda machine, answers: list(spec.WORKLOADS),
         parse=_parse_workloads,
         options=_workload_options,
@@ -438,6 +491,7 @@ QUESTIONS: tuple[Question, ...] = (
         prompt="Enable now? Type the letters, or `none`.",
         kind="multi",
         why="Each stays switchable later with `feature enable` and `feature disable`.",
+        default_doc="memory",
         default=lambda machine, answers: ["memory"],
         parse=_parse_features,
         options=_feature_options,
@@ -448,6 +502,7 @@ QUESTIONS: tuple[Question, ...] = (
         prompt="Memory access?",
         kind="choice",
         why="Both modes are witnessed. Tools let the agent look things up on its own.",
+        default_doc="`packet+tools`",
         default=lambda machine, answers: "packet+tools",
         parse=_parse_memory_mode,
         options=_memory_options,
@@ -457,10 +512,11 @@ QUESTIONS: tuple[Question, ...] = (
     Question(
         number=11,
         id="observability",
-        prompt="Set up the observability tier (collector, Tempo, Grafana)? Answer y, n, or "
-        "`<lima-home>::<instance>`.",
+        prompt="Set up the observability tier (collector, Tempo, Grafana)? Answer kit, n, or an "
+        "existing instance shown below.",
         kind="engine",
         why="Traces, dashboards and alerts. Without it, traces stay in the local span store only.",
+        default_doc="`kit` when Lima is installed, otherwise `n`",
         default=_default_engine,
         parse=_parse_engine,
         options=_engine_options,
@@ -469,13 +525,14 @@ QUESTIONS: tuple[Question, ...] = (
     Question(
         number=12,
         id="isolation_tier3",
-        prompt="Enable isolation tier 3 (tools run under gVisor in the Lima VM)?",
+        prompt="Enable isolation tier 3 (tools run under gVisor in the virtual machine)?",
         kind="yesno",
         why="Tool calls from MCP clients run in a sandboxed container. Off by default.",
+        default_doc="no",
         default=lambda machine, answers: False,
         parse=_yes_no,
         applies=_tier_available,
-        applies_when="a Lima instance was chosen at question 11",
+        applies_when="a virtual machine was chosen at question 11",
     ),
     Question(
         number=13,
@@ -484,6 +541,7 @@ QUESTIONS: tuple[Question, ...] = (
         "paths, or press Enter for none.",
         kind="paths",
         why="The runtime refuses a state root inside a location that could restore over it.",
+        default_doc="none",
         default=lambda machine, answers: [],
         parse=_parse_paths,
         notes=_forbidden_notes,
@@ -494,6 +552,7 @@ QUESTIONS: tuple[Question, ...] = (
         prompt="Run the smoke workflows now?",
         kind="yesno",
         why="Two short runs prove the deployment end to end.",
+        default_doc="yes",
         default=lambda machine, answers: True,
         parse=_yes_no,
     ),
@@ -505,8 +564,12 @@ def _shown(value: Any) -> str:
     match value:
         case bool():
             return "y" if value else "n"
-        case {"enabled": enabled, "lima_home": lima_home, "instance": instance}:
-            return f"{lima_home}::{instance}" if enabled else "n"
+        case {"engine": "none"}:
+            return "n"
+        case {"engine": "existing", "lima_home": lima_home, "instance": instance, "enabled": enabled}:
+            return f"{lima_home}::{instance}" + ("" if enabled else ":off")
+        case {"engine": "kit", "enabled": enabled}:
+            return "kit" if enabled else "kit:off"
         case list():
             return ",".join(str(item) for item in value) or "none"
         case "":
@@ -523,8 +586,9 @@ def _typed_default(question: Question, value: Any) -> str:
         case "workloads":
             return "".join(str(spec.WORKLOADS.index(name) + 1) for name in value)
         case "features":
+            # Question 9 offers five features; the others are switched with `feature enable`.
             letters = {name: letter for letter, name, _ in FEATURE_LETTERS}
-            return "".join(letters[name] for name in value) or "none"
+            return "".join(letters[name] for name in value if name in letters) or "none"
         case _:
             return _shown(value)
 
@@ -599,6 +663,7 @@ def describe(machine: Machine, preset: Answers) -> list[dict[str, Any]]:
                 "prompt": question.prompt,
                 "kind": question.kind,
                 "why": question.why,
+                "default_in_words": question.default_doc,
                 "applies_when": question.applies_when,
                 "default": default,
                 "default_as_typed": _typed_default(question, default),

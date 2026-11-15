@@ -12,9 +12,11 @@ with the name of the missing or malformed answer; nothing downstream re-checks.
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, replace
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +25,9 @@ from arhugula_kit.errors import Exit, KitError
 
 __all__ = [
     "MEMORY_MODES",
+    "RESERVED_NAMES",
     "WORKLOADS",
+    "Engine",
     "Observability",
     "Project",
     "Spec",
@@ -45,13 +49,28 @@ WORKLOADS: tuple[str, ...] = (
 MEMORY_MODES: tuple[str, ...] = ("packet", "packet+tools")
 
 _NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
+RESERVED_NAMES = ("default", "harness")
+"""`default` addresses the deployment default on the command line; `harness` is its config file."""
+
+
+class Engine(StrEnum):
+    """Which Lima VM provides the deployment's Docker engine."""
+
+    NONE = "none"  # no VM: no trace stack and no tier 3
+    KIT = "kit"  # the kit's own VM under `<home>/lima`, built for this machine's CPU
+    EXISTING = "existing"  # a Lima instance the operator already had
 
 
 @dataclass(frozen=True)
 class Observability:
-    """Answer 11: the observability tier and the Lima instance that hosts it."""
+    """Answer 11: whether the trace stack runs, and the VM whose Docker engine hosts it.
+
+    `lima_home` and `instance` name an existing instance and are empty otherwise: the
+    kit's own VM is located from the deployment home, so it survives `relocate`.
+    """
 
     enabled: bool = False
+    engine: Engine = Engine.NONE
     lima_home: str = ""
     instance: str = ""
 
@@ -84,6 +103,10 @@ class Spec:
     python_paths: tuple[str, ...] = ()  # directories added to PYTHONPATH for runs (validators)
     skill_hook: str = ""  # `module:Class` of the skill-activation hook, when one is set
     provider_settings: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)  # CLI knobs
+    drift_thresholds: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)  # primitive -> threshold, window
+    # Ledgers signed from their first entry, by project name ("" is the deployment default).
+    # Each carries a cutover record; `deploy.apply` adds a ledger here while it is still empty.
+    cutover_ledgers: tuple[str, ...] = ()
     projects: Mapping[str, Project] = field(default_factory=dict)
     current_project: str = ""
     overlay: Mapping[str, Any] = field(default_factory=dict)  # merged last into every config
@@ -128,6 +151,22 @@ def _names(raw: Mapping[str, Any], key: str, allowed: tuple[str, ...], what: str
     return values
 
 
+def _observability(raw: Mapping[str, Any]) -> Observability:
+    enabled = _take(raw, "enabled", bool)
+    word = _take(raw, "engine", str)
+    if word not in tuple(Engine):
+        raise _refuse(f"`observability.engine` must be one of {', '.join(Engine)}")
+    engine = Engine(word)
+    lima_home, instance = str(raw.get("lima_home", "")), str(raw.get("instance", ""))
+    if engine is Engine.EXISTING and not (lima_home and instance):
+        raise _refuse("`observability.engine` is `existing` but no `lima_home` and `instance` are given")
+    if engine is not Engine.EXISTING and (lima_home or instance):
+        raise _refuse("`observability.lima_home` and `.instance` belong to the `existing` engine only")
+    if enabled and engine is Engine.NONE:
+        raise _refuse("`observability.enabled` is true but `observability.engine` is `none`")
+    return Observability(enabled=enabled, engine=engine, lima_home=lima_home, instance=instance)
+
+
 def parse(raw: Mapping[str, Any], *, known_features: tuple[str, ...]) -> Spec:
     """Parse the JSON document into a `Spec`, or refuse naming what is wrong."""
     if raw.get("format") != FORMAT:
@@ -145,11 +184,15 @@ def parse(raw: Mapping[str, Any], *, known_features: tuple[str, ...]) -> Spec:
     memory_mode = _take(raw, "memory_mode", str)
     if memory_mode not in MEMORY_MODES:
         raise _refuse(f"`memory_mode` must be one of {', '.join(MEMORY_MODES)}")
-    observability = _take(raw, "observability", dict)
     projects: dict[str, Project] = {}
     for name, entry in dict(raw.get("projects", {})).items():
         if not _NAME.fullmatch(name):
-            raise _refuse(f"project name {name!r} must be lowercase letters, digits and hyphens")
+            raise _refuse(
+                f"project name {name!r} must be lowercase letters, digits and hyphens, "
+                "at most 63 characters"
+            )
+        if name in RESERVED_NAMES:
+            raise _refuse(f"project name {name!r} is reserved; attach it under another name with --name")
         projects[name] = Project(
             path=_take(entry, "path", str),
             workloads=_names(entry, "workloads", WORKLOADS, "workload class"),
@@ -170,11 +213,7 @@ def parse(raw: Mapping[str, Any], *, known_features: tuple[str, ...]) -> Spec:
         workloads=_names(raw, "workloads", WORKLOADS, "workload class"),
         features=_names(raw, "features", known_features, "feature"),
         memory_mode=memory_mode,
-        observability=Observability(
-            enabled=_take(observability, "enabled", bool),
-            lima_home=str(observability.get("lima_home", "")),
-            instance=str(observability.get("instance", "")),
-        ),
+        observability=_observability(_take(raw, "observability", dict)),
         isolation_tier3=_take(raw, "isolation_tier3", bool),
         forbidden_roots=tuple(_take(raw, "forbidden_roots", list)),
         smoke=_take(raw, "smoke", bool),
@@ -183,6 +222,8 @@ def parse(raw: Mapping[str, Any], *, known_features: tuple[str, ...]) -> Spec:
         python_paths=tuple(raw.get("python_paths", ())),
         skill_hook=str(raw.get("skill_hook", "")),
         provider_settings=dict(raw.get("provider_settings", {})),
+        drift_thresholds=dict(raw.get("drift_thresholds", {})),
+        cutover_ledgers=tuple(raw.get("cutover_ledgers", ())),
         projects=projects,
         current_project=current,
         overlay=dict(raw.get("overlay", {})),
@@ -206,6 +247,6 @@ def load(path: Path, *, known_features: tuple[str, ...]) -> Spec:
 
 def save(spec: Spec, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    scratch = path.with_suffix(".json.tmp")
+    scratch = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     scratch.write_text(json.dumps(spec.to_json(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
     scratch.replace(path)

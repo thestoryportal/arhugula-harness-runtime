@@ -1,0 +1,12 @@
+# Grafana loads every dashboard JSON file the kit ships (kit extension).
+apiVersion: 1
+
+providers:
+  - name: arhugula
+    folder: Arhugula Harness
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/dashboards

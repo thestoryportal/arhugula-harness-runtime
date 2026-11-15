@@ -187,6 +187,53 @@ def _provider_key_delete(args: argparse.Namespace) -> int:
     return Exit.OK
 
 
+PROVIDER_SETTINGS = {
+    "timeout_seconds": "how long one call may take, in seconds (a number)",
+    "args": "extra arguments for every call, as a JSON list of strings",
+    "auth_args": "the arguments of the sign-in check, as a JSON list of strings",
+    "auth_check": "whether the runtime checks sign-in at start (true or false)",
+    "response_format": "how the CLI answers: text, json or jsonl",
+    "prompt_transport": "how the prompt is passed: stdin or arg",
+}
+
+
+def _cli_provider(deployment: Deployment, name: str) -> providers.Provider:
+    provider = providers.by_name(name)
+    if provider.access is not providers.Access.CLI or name not in deployment.spec.providers:
+        raise KitError(
+            Exit.PRECONDITION,
+            f"{name} is not an enabled command-line provider; these settings belong to "
+            "the CLI providers (claude_code, codex, gemini, antigravity)",
+            fix=f"arhugula provider enable {name}",
+        )
+    return provider
+
+
+def _provider_set(args: argparse.Namespace) -> int:
+    deployment = deploy.open_deployment()
+    _cli_provider(deployment, args.name)
+    try:
+        value = json.loads(args.value)
+    except ValueError:
+        value = args.value
+    settings = {**deployment.spec.provider_settings}
+    settings[args.name] = {**settings.get(args.name, {}), args.key: value}
+    deploy.apply(deployment, replace(deployment.spec, provider_settings=settings))
+    say(f"{args.name}: {args.key} = {json.dumps(value)}")
+    return Exit.OK
+
+
+def _provider_unset(args: argparse.Namespace) -> int:
+    deployment = deploy.open_deployment()
+    _cli_provider(deployment, args.name)
+    settings = {**deployment.spec.provider_settings}
+    kept = {k: v for k, v in settings.get(args.name, {}).items() if k != args.key}
+    settings = {**{n: s for n, s in settings.items() if n != args.name}, **({args.name: kept} if kept else {})}
+    deploy.apply(deployment, replace(deployment.spec, provider_settings=settings))
+    say(f"{args.name}: {args.key} is back to the runtime's default")
+    return Exit.OK
+
+
 # --- routing ----------------------------------------------------------------------------
 
 
@@ -458,7 +505,7 @@ def _policy_show(args: argparse.Namespace) -> int:
     say("What an approval gate approves without asking (solo-developer persona):")
     say(f"  solo-floor-auto:            {solo:3}  read-only tool calls at the solo floor")
     say(f"  local-mutation-floor-auto:  {mutation:3}  tool calls that change local files")
-    say("\nWith a setting off, the gate asks you in the terminal, or pauses when durable pause is on.")
+    say("\nWith a setting off, the gate asks you in the terminal. A run without a terminal rejects the gate.")
     return Exit.OK
 
 
@@ -611,6 +658,30 @@ VERBS: tuple[Verb, ...] = (
         (Arg(("name",), "the provider", {"choices": PROVIDER_NAMES}),),
         example="arhugula provider disable gemini",
         detail="The default and the fallback provider cannot be disabled; change the chain first.",
+    ),
+    Verb(
+        ("provider", "set"),
+        "Set one setting of a command-line provider.",
+        "runtime",
+        _provider_set,
+        (
+            Arg(("name",), "an enabled CLI provider"),
+            Arg(("key",), "the setting", {"choices": tuple(PROVIDER_SETTINGS)}),
+            Arg(("value",), "the value; JSON for lists, numbers and true/false"),
+        ),
+        example="arhugula provider set claude_code timeout_seconds 300",
+        detail="Settings: " + "; ".join(f"`{key}`: {meaning}" for key, meaning in PROVIDER_SETTINGS.items()) + ".",
+    ),
+    Verb(
+        ("provider", "unset"),
+        "Return one setting of a command-line provider to the runtime's default.",
+        "runtime",
+        _provider_unset,
+        (
+            Arg(("name",), "an enabled CLI provider"),
+            Arg(("key",), "the setting", {"choices": tuple(PROVIDER_SETTINGS)}),
+        ),
+        example="arhugula provider unset claude_code timeout_seconds",
     ),
     Verb(
         ("provider", "key", "set"),

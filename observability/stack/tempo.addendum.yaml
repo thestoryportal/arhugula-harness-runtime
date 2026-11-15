@@ -1,0 +1,24 @@
+
+# --- added by the kit (kit extension) -------------------------------------------------
+# TraceQL metrics queries, which the dashboards and alert rules use, are answered by the
+# metrics-generator's local-blocks processor. Upstream's file does not enable it.
+metrics_generator:
+  processor:
+    local_blocks:
+      filter_server_spans: false
+      flush_to_storage: true
+  storage:
+    path: /var/tempo/generator/wal
+  traces_storage:
+    path: /var/tempo/generator/traces
+
+overrides:
+  defaults:
+    metrics_generator:
+      processors: [local-blocks]
+
+# Tempo answers a TraceQL metrics query over at most 3 hours unless told otherwise. The
+# stack keeps traces for 24 hours, so the dashboards may look that far back.
+query_frontend:
+  metrics:
+    max_duration: 24h

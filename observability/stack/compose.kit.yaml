@@ -1,0 +1,21 @@
+# Kit additions to upstream's Compose project (kit extension).
+#
+# Compose merges this file over upstream's compose.yaml, which the kit copies unchanged
+# from the pinned checkout. It adds the logs pipeline's mounts and the provisioned
+# dashboards; it changes no image, port or upstream setting.
+
+services:
+  otel-collector:
+    # The collector keeps the collected log file and its read offsets in a named volume.
+    # A named volume's root belongs to root, and the image's own user cannot write there.
+    user: "0:0"
+    volumes:
+      - ${ARHUGULA_LOGS_DIR:?the kit sets ARHUGULA_LOGS_DIR to the run-log directory}:/var/log/arhugula:ro
+      - collector-data:/var/lib/arhugula-collector
+
+  grafana:
+    volumes:
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
+
+volumes:
+  collector-data:

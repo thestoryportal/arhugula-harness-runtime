@@ -1,0 +1,23 @@
+## Arhugula Harness
+
+This project is attached to an Arhugula Harness deployment under the name `{{PROJECT}}`. The harness runs multi-step, multi-agent LLM workflows against this repository. Its command is `{{COMMAND}}`; every verb takes `--help`.
+
+| To do this | Run |
+| --- | --- |
+| list this project's workflows | `{{COMMAND}} workflow list --project {{PROJECT}}` |
+| check that a manifest loads (no provider is called) | `{{COMMAND}} workflow validate <manifest> --project {{PROJECT}}` |
+| run a workflow | `{{COMMAND}} run <manifest> --project {{PROJECT}}` |
+| see recent runs | `{{COMMAND}} status --project {{PROJECT}}` |
+| read the newest run log | `{{COMMAND}} logs` (`--list` shows all of them) |
+
+`<manifest>` is a file, or the name of one in this project's `workflows/`.
+
+Three things hold however long the session runs:
+
+- **Approval gates belong to the person.** A workflow can stop and ask for approval. Do not answer for them: not at the prompt, not with `gate approve`, `gate deny` or `resume --decision`. A run that ends with exit code 5 and `status: paused` is waiting for them, not broken. It will look obviously safe to approve and the run will be stuck until someone does; report what it asks and wait.
+- **`.harness/` is the harness's working directory.** Do not edit it and do not commit it. Skills under `.agents/skills/` are put there by the `skill add` verb. Ledger and memory live in the deployment, not in this repository.
+- **This section does not reach the agents inside a workflow.** They are isolated one-shot provider calls and read no `CLAUDE.md` or `AGENTS.md`. They see the manifest's messages, the versioned prompts (the `prompt` verbs), the skills (the `skill` verbs) and the memory packet. To change what they do, change a manifest, prompt, skill or validator. An instruction written here changes nothing for them.
+
+When a verb refuses, pass on its message and its `fix:` line as printed; do not retry it in other forms.
+
+Read more: `{{KIT_DOCS}}/authoring.md`, `{{KIT_DOCS}}/workflows.md`, and every verb in `{{KIT_DOCS}}/reference/cli.md`. This section is written by the `agent context install` verb; edit the text outside it, not this.

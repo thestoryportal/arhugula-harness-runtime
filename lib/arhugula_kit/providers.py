@@ -54,6 +54,8 @@ class Provider:
     runtime_auth_check: bool = False  # whether the runtime probes sign-in at bootstrap
     extra_dirs: tuple[str, ...] = ()  # home-relative directories searched besides PATH
     secret_name: str = ""  # SDK providers: the keyring entry name the runtime reads
+    install: tuple[str, ...] = ()  # terminal commands that install it; the first is preferred
+    sign_in: str = ""  # the terminal command that signs in, or starts the tool so it can
     caveat: str = ""  # printed at the init prompt, by `provider check`, and in the docs
 
 
@@ -68,6 +70,11 @@ CATALOGUE: tuple[Provider, ...] = (
         command="claude",
         cli_kind="claude-code",
         runtime_auth_check=True,
+        install=(
+            "curl -fsSL https://claude.ai/install.sh | bash",
+            "brew install --cask claude-code",
+        ),
+        sign_in="claude",
     ),
     Provider(
         name="ollama",
@@ -76,6 +83,9 @@ CATALOGUE: tuple[Provider, ...] = (
         access=Access.OLLAMA,
         default_model="llama3.2:3b",
         family="local_open_weight",
+        command="ollama",
+        install=("brew install ollama",),
+        sign_in="brew services start ollama",
     ),
     Provider(
         name="codex",
@@ -87,6 +97,8 @@ CATALOGUE: tuple[Provider, ...] = (
         command="codex",
         cli_kind="codex",
         runtime_auth_check=True,
+        install=("brew install --cask codex", "npm install -g @openai/codex"),
+        sign_in="codex login",
         caveat=(
             "Upstream marks the Codex profile HELD: the CLI's filesystem read exposure is "
             "an untested boundary. Sign in with `codex login` to use your ChatGPT "
@@ -103,6 +115,8 @@ CATALOGUE: tuple[Provider, ...] = (
         family="google",
         command="gemini",
         cli_kind="gemini",
+        install=("brew install gemini-cli", "npm install -g @google/gemini-cli"),
+        sign_in="gemini",
         caveat=(
             "The Gemini CLI refuses individual Google accounts at this release and points "
             "to Antigravity. The runtime dispatches correctly; the CLI itself declines."
@@ -118,7 +132,9 @@ CATALOGUE: tuple[Provider, ...] = (
         command="agy",
         cli_kind="antigravity",
         runtime_auth_check=True,
-        extra_dirs=(".gemini/bin",),
+        extra_dirs=(".local/bin", ".gemini/bin"),
+        install=("curl -fsSL https://antigravity.google/cli/install.sh | bash",),
+        sign_in="agy",
     ),
     Provider(
         name="anthropic",
@@ -207,7 +223,7 @@ def _check_cli(provider: Provider) -> ProviderState:
             provider,
             Status.NOT_INSTALLED,
             f"`{provider.command}` is not on PATH",
-            fix=f"install the {provider.title} and sign in, then run `arhugula provider check`",
+            fix=f"{provider.install[0]}  (then sign in: `{provider.sign_in}`)",
         )
     version = _version(command)
     match provider.name:

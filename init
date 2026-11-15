@@ -3,15 +3,58 @@
 #
 #   <home>/kit/init                    ask the questions in this terminal
 #   <home>/kit/init --answers <file>   replay an answers file; refuses on a missing answer
-#   <home>/kit/init --questions-json   print the questions for an agent to ask
+#   <home>/kit/init --questions-json   print the dependencies and questions for an agent
 #   <home>/kit/init --help             every mode
 #
-# init needs only `uv` to start: it runs the kit under uv's CPython 3.12 until the
-# deployment has its own environment.
+# init is written in Python and runs under uv's CPython 3.12 until the deployment has its
+# own environment. This script makes sure those two exist first. It installs nothing on
+# its own: it explains what is missing, shows the command, and runs it only on a yes.
+# The same two dependencies, with every other one, are listed by init itself and in
+# docs/install.md; tests/test_dependencies.py keeps the commands here equal to that table.
 set -u
 KIT=${0:A:h}
+
+ask() {  # ask "<question>": true only when a person at this terminal types y
+  [[ -t 0 ]] || return 1
+  read -q "?    $1 [y/N]: "
+  local answer=$?
+  print
+  return $answer
+}
+
 if ! command -v uv >/dev/null; then
-  print -u2 "init: uv is not on PATH. Install it with: brew install uv"
-  exit 3
+  print -u2 "init: uv is not installed."
+  print -u2 "  what it is for: uv builds the harness and creates its private Python environment."
+  print -u2 "  set it up:      brew install uv"
+  print -u2 "             or:  curl -LsSf https://astral.sh/uv/install.sh | sh"
+  print -u2 "  check by hand:  uv --version"
+  if command -v brew >/dev/null && ask 'Run `brew install uv` now?'; then
+    brew install uv || exit 5
+  elif ask 'Run `curl -LsSf https://astral.sh/uv/install.sh | sh` now?'; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh || exit 5
+    export PATH="$HOME/.local/bin:$PATH"
+  fi
+  if ! command -v uv >/dev/null; then
+    print -u2 "init: uv is still not on PATH. Install it, open a new terminal, and run init again."
+    exit 3
+  fi
 fi
-PYTHONPATH=$KIT/lib exec uv run --quiet --no-project --python 3.12 -- python -m arhugula_kit init "$@"
+
+# The exit status is the answer here; uv's own "no interpreter found" text adds nothing
+# to the guide printed below.
+if ! uv python find 3.12 >/dev/null 2>&1; then
+  print -u2 "init: uv has no CPython 3.12."
+  print -u2 "  what it is for: the Python the harness runs on. uv keeps it apart from the system Python."
+  print -u2 "  set it up:      uv python install 3.12"
+  print -u2 "  check by hand:  uv python find 3.12"
+  if ask 'Run `uv python install 3.12` now?'; then
+    uv python install 3.12 || exit 5
+  else
+    print -u2 "init: CPython 3.12 is needed. Install it and run init again."
+    exit 3
+  fi
+fi
+
+# uv must not download a Python on its own here: the check above already settled it.
+UV_PYTHON_DOWNLOADS=never PYTHONPATH=$KIT/lib \
+  exec uv run --quiet --no-project --python 3.12 -- python -m arhugula_kit init "$@"

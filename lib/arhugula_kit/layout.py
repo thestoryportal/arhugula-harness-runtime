@@ -11,10 +11,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-__all__ = ["KIT_ROOT", "Home"]
+__all__ = ["KIT_ROOT", "KIT_VM_NAME", "STACK_PORTS", "Home"]
 
 KIT_ROOT = Path(__file__).resolve().parents[2]
 """The kit clone: `<home>/kit` in an initialized deployment."""
+
+STACK_PORTS: dict[str, int] = {"Grafana": 3000, "Tempo": 3200, "OTLP gRPC": 4317, "OTLP HTTP": 4318}
+"""The loopback ports upstream's Compose project publishes (its defaults; the kit keeps them)."""
+
+KIT_VM_NAME = "arhugula"
+"""The Lima instance the kit creates under `<home>/lima`."""
 
 
 @dataclass(frozen=True)
@@ -103,6 +109,15 @@ class Home:
         return self.root / "observability"
 
     @property
+    def lima(self) -> Path:
+        """The Lima home of the kit's own VM. It moves with the deployment."""
+        return self.root / "lima"
+
+    @property
+    def grafana_password(self) -> Path:
+        return self.secrets / "grafana-admin-password"
+
+    @property
     def secrets(self) -> Path:
         return self.root / "secrets"
 
@@ -135,4 +150,5 @@ class Home:
             "{{KEYS}}": str(self.keys),
             "{{LOGS}}": str(self.logs),
             "{{RUN}}": str(self.run),
+            "{{OBSERVABILITY}}": str(self.observability),
         }

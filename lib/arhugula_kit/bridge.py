@@ -309,8 +309,8 @@ def skills_load(args: dict[str, Any]) -> Any:
         "skills": [
             {
                 "skill_id": str(skill_id),
-                "version_sha": str(getattr(skill, "version_sha", "")),
-                "body_tokens": int(getattr(skill, "body_tokens", 0)),
+                "version_sha": str(skill.manifest.version_sha or ""),
+                "body_tokens": int(skill.manifest.body_tokens or 0),
             }
             for skill_id, skill in loaded.items()
         ]

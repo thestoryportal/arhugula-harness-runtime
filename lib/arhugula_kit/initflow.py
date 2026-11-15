@@ -3,7 +3,8 @@
 The steps always run in this order, and each one either completes or stops init with the
 failure and its fix:
 
-    survey the machine -> answers -> preflight (machine) -> install -> preflight (installed)
+    survey the machine -> dependencies (check, explain, offer, re-check) -> answers
+    -> preflight (machine) -> install -> preflight (installed)
     -> generate and have the runtime accept every config -> stamp the state root
     -> preflight (generated) -> observability stack -> isolation tier 3 -> smoke runs
 
@@ -23,7 +24,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from arhugula_kit import deploy, detect, preflight, proc, questions, render, runtime, spec
+from arhugula_kit import dependencies, deploy, detect, preflight, proc, questions, render, runtime, spec
 from arhugula_kit.detect import Machine
 from arhugula_kit.errors import Exit, KitError
 from arhugula_kit.layout import KIT_ROOT, Home
@@ -48,6 +49,11 @@ def _interactive() -> bool:
     return sys.stdin.isatty()
 
 
+def _agree(question: str) -> bool:
+    """An offer to run a command: it runs only when the operator types yes."""
+    return _confirm(question, default=False)
+
+
 def _confirm(question: str, *, default: bool = True) -> bool:
     hint = "Y/n" if default else "y/N"
     answer = input(f"    {question} [{hint}]: ").strip().lower()
@@ -61,14 +67,19 @@ def _preflight(stage: Stage, subject: Subject, *, offer: bool) -> None:
         for index, (check, finding) in enumerate(results):
             if finding.level is Level.FAIL and finding.offer:
                 say(f"  {check.id} {check.title}: {finding.detail}")
-                if _confirm(f"Run `{' '.join(finding.offer)}` now?"):
+                if _agree(f"Run `{' '.join(finding.offer)}` now?"):
                     code = subprocess.call(list(finding.offer))
                     if code != 0:
                         raise KitError(
                             Exit.EXTERNAL_TOOL, f"`{' '.join(finding.offer)}` exited {code}"
                         )
                     results[index] = (check, check.run(subject))
-    preflight.report(results, out=say)
+    consequence = {
+        Stage.MACHINE: "nothing was written",
+        Stage.INSTALLED: "the environment is installed; no configuration was generated",
+        Stage.GENERATED: "the configuration was generated but the deployment is not verified",
+    }[stage]
+    preflight.report(results, out=say, consequence=consequence)
 
 
 def _answers(machine: Machine, args: argparse.Namespace, preset: dict[str, Any]) -> dict[str, Any]:
@@ -77,7 +88,16 @@ def _answers(machine: Machine, args: argparse.Namespace, preset: dict[str, Any])
             given = json.loads(Path(args.answers).read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
             raise KitError(Exit.PRECONDITION, f"cannot read the answers file: {exc}") from exc
-        return {**given, **questions.complete(machine, given)}
+        placeholder = [key for key, value in given.items() if "/absolute/path/to" in json.dumps(value)]
+        if placeholder:
+            raise KitError(
+                Exit.PRECONDITION,
+                f"the answers file still holds the example's placeholder path in: {', '.join(placeholder)}",
+                fix="replace every /absolute/path/to/... with a real path",
+            )
+        # The file answers the questions. Whatever else the deployment already carries
+        # (attached projects, settings stored by verbs) stays, unless the file names it.
+        return {**preset, **given, **questions.complete(machine, given)}
     if args.yes or not _interactive():
         if not args.yes:
             raise KitError(
@@ -85,8 +105,19 @@ def _answers(machine: Machine, args: argparse.Namespace, preset: dict[str, Any])
                 "init needs a terminal to ask its questions",
                 fix="run it in a terminal, or pass --answers <file> or --yes",
             )
-        return {**preset, **questions.ask_all(machine, preset=preset, accept_defaults=True, out=sys.stdout)}
-    return {**preset, **questions.ask_all(machine, preset=preset)}
+        return _asked(preset, questions.ask_all(machine, preset=preset, accept_defaults=True, out=sys.stdout))
+    return _asked(preset, questions.ask_all(machine, preset=preset))
+
+
+def _asked(preset: dict[str, Any], asked: dict[str, Any]) -> dict[str, Any]:
+    """Answers given at the prompts, over whatever the deployment already carried.
+
+    Question 9 covers five features. One switched on with `arhugula feature enable` is
+    not on its list, so asking again must not switch it off.
+    """
+    offered = {name for _, name, _ in questions.FEATURE_LETTERS}
+    kept = [name for name in preset.get("features", ()) if name not in offered]
+    return {**preset, **asked, "features": [*asked["features"], *kept]}
 
 
 def _spec_of(raw: dict[str, Any]) -> Spec:
@@ -161,6 +192,14 @@ def generate(home: Home, wanted: Spec) -> deploy.Deployment:
     say(f"  state root verified and stamped by the runtime: {stamped['state_root']}")
     home.pause_journal.mkdir(mode=0o700, exist_ok=True)
     say(f"  pause-journal root: {home.pause_journal}")
+    # An agent CLI opened in the home itself finds the kit's instructions from here.
+    (home.root / "AGENTS.md").write_text(
+        "# Arhugula Harness deployment home\n\n"
+        "This directory is a deployment of the Arhugula Harness. Before you act in it, read "
+        "`kit/AGENTS.md`: it says how to operate the deployment and what never to do here.\n",
+        encoding="utf-8",
+    )
+    (home.root / "CLAUDE.md").write_text("@kit/AGENTS.md\n", encoding="utf-8")
     link = home.bin / "arhugula"
     home.bin.mkdir(exist_ok=True)
     if link.is_symlink() or link.exists():
@@ -214,19 +253,37 @@ def smoke(deployment: deploy.Deployment) -> None:
 def run_init(args: argparse.Namespace) -> int:
     kit_home = Home.of_kit()
     existing = _existing_raw(kit_home)
-    lima_home = (existing.get("observability") or {}).get("lima_home") or None
 
     if args.smoke:
         smoke(deploy.open_deployment(kit_home))
         return Exit.OK
 
-    say("Surveying this machine (nothing is changed)...")
-    machine = detect.survey(
-        ollama_host=existing.get("ollama_host", detect.OLLAMA_DEFAULT_HOST), lima_home=lima_home
-    )
+    def survey() -> Machine:
+        return detect.survey(
+            kit_home,
+            ollama_host=existing.get("ollama_host", detect.OLLAMA_DEFAULT_HOST),
+            lima_home=(existing.get("observability") or {}).get("lima_home") or None,
+        )
+
+    # Standard error, so that `--questions-json` prints nothing but JSON on standard output.
+    print("Surveying this machine (nothing is changed)...", file=sys.stderr, flush=True)
+    machine = survey()
     if args.questions_json:
-        print(json.dumps(questions.describe(machine, existing), indent=2))
+        print(
+            json.dumps(
+                {
+                    "dependencies": dependencies.as_json(machine, kit_home),
+                    "questions": questions.describe(machine, existing),
+                },
+                indent=2,
+            )
+        )
         return Exit.OK
+
+    asking = _interactive() and not (args.answers or args.yes or args.reverify)
+    machine = dependencies.run_stage(
+        machine, kit_home, offer=asking, resurvey=survey, out=say, confirm=_agree
+    )
 
     keep = bool(args.reverify)
     if keep and not existing:
@@ -236,25 +293,29 @@ def run_init(args: argparse.Namespace) -> int:
         keep = _confirm("Keep its answers and only re-verify?")
     # A relocated deployment finds itself by where its kit now sits; the stored home is stale.
     answers = {**existing, "home": str(kit_home.root)} if keep else _answers(machine, args, existing)
-    home = Home(Path(answers["home"]))
+    # The one checkpoint for the answers, before anything is checked, installed or written.
+    wanted = _spec_of(answers)
+    home = Home(Path(wanted.home))
     subject = Subject(machine, answers, home)
 
-    _preflight(Stage.MACHINE, subject, offer=_interactive() and not args.answers)
+    _preflight(Stage.MACHINE, subject, offer=asking)
     _move_into_home(home, answers, args)
     _install(home, reinstall=args.reinstall)
     _preflight(Stage.INSTALLED, subject, offer=False)
-    deployment = generate(home, _spec_of(answers))
+    deployment = generate(home, wanted)
     _preflight(Stage.GENERATED, subject, offer=False)
 
     from arhugula_kit import isolation, observability
 
     if deployment.spec.observability.enabled:
-        observability.up(deployment, out=say)
+        deployment = observability.up(deployment, out=say)
     if deployment.spec.isolation_tier3:
         deployment = isolation.enable_tier3(deployment, out=say)
     if deployment.spec.smoke:
         smoke(deployment)
 
+    pending = home.config / "init-answers.pending.json"
+    pending.unlink(missing_ok=True)
     say("\nThe deployment is ready.")
     say(f"  home:    {home.root}")
     say(f"  command: {home.bin / 'arhugula'}")

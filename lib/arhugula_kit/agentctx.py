@@ -12,7 +12,7 @@ from pathlib import Path
 from arhugula_kit.deploy import Deployment
 from arhugula_kit.layout import KIT_ROOT
 
-__all__ = ["BEGIN", "END", "install", "section"]
+__all__ = ["BEGIN", "END", "install", "remove", "section"]
 
 BEGIN = "<!-- arhugula-harness:begin -->"
 END = "<!-- arhugula-harness:end -->"
@@ -46,3 +46,24 @@ def install(deployment: Deployment, name: str) -> list[str]:
     project = Path(deployment.spec.projects[name].path)
     body = section(deployment, name)
     return [_write(project / filename, body) for filename in FILES]
+
+
+def remove(project: Path) -> list[str]:
+    """Take the section out of the project's CLAUDE.md and AGENTS.md; leave everything else."""
+    done: list[str] = []
+    for filename in FILES:
+        path = project / filename
+        existing = path.read_text(encoding="utf-8") if path.is_file() else ""
+        if BEGIN not in existing or END not in existing:
+            done.append(f"{path}: no harness section")
+            continue
+        head, _, rest = existing.partition(BEGIN)
+        _, _, tail = rest.partition(END)
+        remaining = head.rstrip("\n") + ("\n" if head.strip() else "") + tail.lstrip("\n")
+        if remaining.strip():
+            path.write_text(remaining, encoding="utf-8")
+            done.append(f"removed the harness section from {path}")
+        else:
+            path.unlink()
+            done.append(f"removed {path} (it held only the harness section)")
+    return done

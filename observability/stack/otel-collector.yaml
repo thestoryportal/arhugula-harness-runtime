@@ -1,0 +1,60 @@
+# OpenTelemetry Collector configuration for the deployment (kit extension).
+#
+# The traces pipeline is upstream's (OTLP in, batch, OTLP to Tempo) with one added step:
+# `transform/cost` copies the cost attribute, which the runtime writes as text, into a
+# number so that Tempo can sum it. The logs pipeline is the kit's: it tails the
+# deployment's run logs and writes them as OTLP JSON lines to a file. No logs backend is
+# installed; point `exporters` at one to add it.
+
+extensions:
+  file_storage/offsets:
+    directory: /var/lib/arhugula-collector/offsets
+    create_directory: true
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+  filelog/runs:
+    include:
+      - /var/log/arhugula/*.log
+    start_at: beginning
+    include_file_name: true
+    storage: file_storage/offsets
+    resource:
+      service.name: arhugula-harness
+
+processors:
+  batch: {}
+  transform/cost:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          - set(attributes["cost.attributed_number"], Double(attributes["cost.attributed_decimal"])) where attributes["cost.attributed_decimal"] != nil
+
+exporters:
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+  file/logs:
+    path: /var/lib/arhugula-collector/run-logs.jsonl
+    rotation:
+      max_megabytes: 20
+      max_backups: 3
+
+service:
+  extensions: [file_storage/offsets]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [transform/cost, batch]
+      exporters: [otlp/tempo]
+    logs:
+      receivers: [filelog/runs]
+      processors: [batch]
+      exporters: [file/logs]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sqlite3
 import tarfile
@@ -74,7 +75,7 @@ def _status(args: argparse.Namespace) -> int:
 def _backup(args: argparse.Namespace) -> int:
     deployment = deploy.open_deployment()
     home = deployment.home
-    home.backups.mkdir(parents=True, exist_ok=True)
+    home.backups.mkdir(mode=0o700, parents=True, exist_ok=True)
     archive = (
         Path(args.output).expanduser().resolve()
         if args.output
@@ -82,10 +83,18 @@ def _backup(args: argparse.Namespace) -> int:
     )
     if archive.exists():
         raise KitError(Exit.PRECONDITION, f"{archive} already exists")
-    with tarfile.open(archive, "w:gz") as tar:
-        tar.add(home.state, arcname="state")
-        tar.add(home.spec_file, arcname="config/init-answers.json")
-    archive.chmod(0o600)
+    # The archive holds the private state root, so it is private from its first byte, and a
+    # write that fails leaves no partial archive behind.
+    partial = archive.with_name(archive.name + ".partial")
+    handle = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(handle, "wb") as raw, tarfile.open(fileobj=raw, mode="w:gz") as tar:
+            tar.add(home.state, arcname="state")
+            tar.add(home.spec_file, arcname="config/init-answers.json")
+        partial.replace(archive)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
     say(f"wrote {archive} ({_human(archive.stat().st_size)}): the state root and the answers file.")
     say("Keys under keys/ and secrets under secrets/ are not in it; back those up separately.")
     return Exit.OK
@@ -101,19 +110,31 @@ def _restore(args: argparse.Namespace) -> int:
 
     if daemon.running(home):
         raise KitError(Exit.PRECONDITION, "a harness daemon is running", fix="arhugula daemon stop")
-    with tarfile.open(archive, "r:gz") as tar:
-        names = tar.getnames()
-        if "state" not in names:
+    aside = home.root / f"state.before-restore-{time.strftime('%Y%m%dT%H%M%S')}"
+    try:
+        opened = tarfile.open(archive, "r:gz")
+    except tarfile.TarError as unreadable:
+        raise KitError(
+            Exit.PRECONDITION, f"{archive} is not an archive written by `state backup`: {unreadable}"
+        ) from unreadable
+    with opened as tar:
+        members = [m for m in tar.getmembers() if m.name == "state" or m.name.startswith("state/")]
+        if not members:
             raise KitError(Exit.PRECONDITION, f"{archive} holds no `state` directory")
-        aside = home.root / f"state.before-restore-{time.strftime('%Y%m%dT%H%M%S')}"
         home.state.rename(aside)
         try:
-            tar.extractall(home.root, members=[m for m in tar.getmembers() if m.name.startswith("state")], filter="data")
-        except Exception:
-            shutil.rmtree(home.state, ignore_errors=True)
+            tar.extractall(home.root, members=members, filter="data")
+            # The `data` filter extracts directories with default permissions. The runtime
+            # requires the state root to be private, so each directory gets its archived mode.
+            for member in members:
+                if member.isdir():
+                    (home.root / member.name).chmod(member.mode & 0o777)
+            verified = runtime.call(home, "bootstrap-state-root", config=str(home.deployment_config))
+        except BaseException:
+            # Restore is all or nothing: put the earlier state root back and report.
+            shutil.rmtree(home.state)
             aside.rename(home.state)
             raise
-    verified = runtime.call(home, "bootstrap-state-root", config=str(home.deployment_config))
     say(f"restored {archive} to {verified['state_root']}; the runtime verified it.")
     say(f"The state root from before the restore is kept at {aside}; delete it when you are sure.")
     return Exit.OK

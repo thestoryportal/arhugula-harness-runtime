@@ -5,8 +5,9 @@
 # Compose plugin, and registers gVisor (`runsc`) for isolation tier 3. Docker Desktop is
 # not involved.
 #
-# The deployment home is mounted read-only at the same path, so the Compose project and
-# the run logs are visible to containers without copying.
+# Only two directories of the deployment home are shown to the VM, both read-only and at
+# fixed places: the Compose project and the run logs. Keys, secrets and the state root
+# stay on the host.
 
 minimumLimaVersion: 2.0.0
 
@@ -18,7 +19,11 @@ memory: 4GiB
 disk: 20GiB
 
 mounts:
-- location: "{{HOME}}"
+- location: "{{OBSERVABILITY}}"
+  mountPoint: /arhugula/observability
+  writable: false
+- location: "{{LOGS}}"
+  mountPoint: /arhugula/logs
   writable: false
 
 containerd:

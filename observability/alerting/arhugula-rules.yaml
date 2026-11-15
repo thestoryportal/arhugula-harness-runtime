@@ -1,0 +1,479 @@
+# Alert rules for the Arhugula Harness (kit extension).
+#
+# Grafana unified alerting, provisioned from this file. Every rule runs one TraceQL metrics
+# query against the Tempo data source as an instant query, reduces it to one number per
+# series and compares it with a threshold. A rule with no matching span returns no series;
+# that state is treated as healthy (noDataState: OK).
+#
+# No contact point is declared here: alerts go to Grafana's default contact point, which
+# sends nothing outside this machine until the operator configures it.
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: arhugula-harness
+    folder: Arhugula Harness
+    interval: 1m
+    rules:
+      - uid: arhugula-workflow-failed
+        title: "Arhugula · Workflow run failed"
+        condition: C
+        data:
+          - refId: A
+            queryType: traceql
+            datasourceUid: tempo
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: A
+              datasource:
+                type: tempo
+                uid: tempo
+              queryType: traceql
+              metricsQueryType: instant
+              query: "{ name = \"workflow.envelope\" && span.workflow.outcome = \"failed\" } | count_over_time() by (resource.service.namespace, span.workflow.id)"
+              tableType: traces
+              limit: 20
+              intervalMs: 60000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              refId: B
+              type: reduce
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              reducer: last
+              settings:
+                mode: dropNN
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              refId: C
+              type: threshold
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 0
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        isPaused: false
+        labels:
+          severity: warning
+          source: arhugula-kit
+        annotations:
+          summary: "A workflow run ended with outcome failed."
+          description: "At least one workflow.envelope span with workflow.outcome = failed in the last 10 minutes. Open the Routing and resilience dashboard, table \"Recent failed workflow runs\", for the fail class."
+          threshold_source: "Kit default (any failure). The reference states no threshold for failed runs."
+          tuning: "Kit default: the reference states no threshold for this signal. Tune the threshold and the window to your deployment."
+      - uid: arhugula-fallback-exhausted
+        title: "Arhugula · Fallback chain exhausted"
+        condition: C
+        data:
+          - refId: A
+            queryType: traceql
+            datasourceUid: tempo
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: A
+              datasource:
+                type: tempo
+                uid: tempo
+              queryType: traceql
+              metricsQueryType: instant
+              query: "{ event:name = \"fallback.exhausted\" } | count_over_time() by (resource.service.namespace)"
+              tableType: traces
+              limit: 20
+              intervalMs: 60000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              refId: B
+              type: reduce
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              reducer: last
+              settings:
+                mode: dropNN
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              refId: C
+              type: threshold
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 0
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        isPaused: false
+        labels:
+          severity: critical
+          source: arhugula-kit
+        annotations:
+          summary: "An LLM dispatch ran out of fallback candidates."
+          description: "At least one fallback.exhausted span event in the last 10 minutes: every candidate in the chain failed or was skipped. Open the Routing and resilience dashboard for the last failure class."
+          threshold_source: "Kit default (any event). The reference states no threshold; the event itself marks a dispatch with no candidate left (reference 5.3)."
+          tuning: "Kit default: the reference states no threshold for this signal. Tune the threshold and the window to your deployment."
+      - uid: arhugula-breaker-opened
+        title: "Arhugula · Circuit breaker opened"
+        condition: C
+        data:
+          - refId: A
+            queryType: traceql
+            datasourceUid: tempo
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: A
+              datasource:
+                type: tempo
+                uid: tempo
+              queryType: traceql
+              metricsQueryType: instant
+              query: "{ event:name = \"breaker.tripped\" && event.harness.breaker.to_state = \"open\" } | count_over_time() by (resource.service.namespace)"
+              tableType: traces
+              limit: 20
+              intervalMs: 60000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              refId: B
+              type: reduce
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              reducer: last
+              settings:
+                mode: dropNN
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              refId: C
+              type: threshold
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 0
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        isPaused: false
+        labels:
+          severity: warning
+          source: arhugula-kit
+        annotations:
+          summary: "A provider or model circuit breaker opened."
+          description: "At least one breaker.tripped span event with to_state = open in the last 10 minutes. The event is also written for recovery transitions; this rule counts openings only."
+          threshold_source: "Kit default (any opening). The reference states no threshold; it states that breaker.tripped is written for every state transition, so the rule filters on to_state = open (reference 5.3)."
+          tuning: "Kit default: the reference states no threshold for this signal. Tune the threshold and the window to your deployment."
+      - uid: arhugula-hitl-timeout
+        title: "Arhugula · Human gate timed out"
+        condition: C
+        data:
+          - refId: A
+            queryType: traceql
+            datasourceUid: tempo
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: A
+              datasource:
+                type: tempo
+                uid: tempo
+              queryType: traceql
+              metricsQueryType: instant
+              query: "{ name = \"hitl.invocation.timed_out\" } | count_over_time() by (resource.service.namespace)"
+              tableType: traces
+              limit: 20
+              intervalMs: 60000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              refId: B
+              type: reduce
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              reducer: last
+              settings:
+                mode: dropNN
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              refId: C
+              type: threshold
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 0
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        isPaused: false
+        labels:
+          severity: warning
+          source: arhugula-kit
+        annotations:
+          summary: "A human-in-the-loop gate timed out without an answer."
+          description: "At least one hitl.invocation.timed_out span in the last 10 minutes. Open the Human-in-the-loop gates dashboard for the degradation mode that was applied."
+          threshold_source: "Kit default (any timeout). The reference states no threshold for gate timeouts."
+          tuning: "Kit default: the reference states no threshold for this signal. Tune the threshold and the window to your deployment."
+      - uid: arhugula-validator-permanent-fail
+        title: "Arhugula · Validator failed permanently"
+        condition: C
+        data:
+          - refId: A
+            queryType: traceql
+            datasourceUid: tempo
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: A
+              datasource:
+                type: tempo
+                uid: tempo
+              queryType: traceql
+              metricsQueryType: instant
+              query: "{ name = \"validator.evaluate\" && span.validator.outcome = \"permanent_fail\" } | count_over_time() by (resource.service.namespace)"
+              tableType: traces
+              limit: 20
+              intervalMs: 60000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              refId: B
+              type: reduce
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              reducer: last
+              settings:
+                mode: dropNN
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              refId: C
+              type: threshold
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 0
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        isPaused: false
+        labels:
+          severity: warning
+          source: arhugula-kit
+        annotations:
+          summary: "A validator check ended in a permanent failure."
+          description: "At least one validator.evaluate span with validator.outcome = permanent_fail in the last 10 minutes. Open the Validators dashboard for the step and fail class."
+          threshold_source: "Kit default (any permanent failure). The reference states no threshold; permanence is read from validator.outcome because validator.fail.permanence is never written (reference 5.5)."
+          tuning: "Kit default: the reference states no threshold for this signal. Tune the threshold and the window to your deployment."
+      - uid: arhugula-cost-threshold
+        title: "Arhugula · Attributed cost above threshold"
+        condition: C
+        data:
+          - refId: A
+            queryType: traceql
+            datasourceUid: tempo
+            relativeTimeRange:
+              from: 3600
+              to: 0
+            model:
+              refId: A
+              datasource:
+                type: tempo
+                uid: tempo
+              queryType: traceql
+              metricsQueryType: instant
+              query: "{ span.cost.attributed_number > 0.0 } | sum_over_time(span.cost.attributed_number) by (resource.service.namespace)"
+              tableType: traces
+              limit: 20
+              intervalMs: 60000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              refId: B
+              type: reduce
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              reducer: last
+              settings:
+                mode: dropNN
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              refId: C
+              type: threshold
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 1
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        isPaused: false
+        labels:
+          severity: warning
+          source: arhugula-kit
+        annotations:
+          summary: "Attributed cost in the last hour is above 1 US dollar."
+          description: "The sum of cost.attributed_number over the last hour is above 1 US dollar for one project. Subscription CLI routes are never priced and do not count. Open the Cost dashboard for the provider and model."
+          threshold_source: "Kit default (1 US dollar per hour per project). Reference section 8 states rates but no budget threshold."
+          tuning: "Kit default: the reference states no threshold for this signal. Tune the threshold and the window to your deployment."
+      - uid: arhugula-alignment-floor-drift
+        title: "Arhugula · Alignment-floor drift detected"
+        condition: C
+        data:
+          - refId: A
+            queryType: traceql
+            datasourceUid: tempo
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: A
+              datasource:
+                type: tempo
+                uid: tempo
+              queryType: traceql
+              metricsQueryType: instant
+              query: "{ event:name = \"gen_ai.eval.alignment_floor.drift_detected\" } | count_over_time() by (resource.service.namespace)"
+              tableType: traces
+              limit: 20
+              intervalMs: 60000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              refId: B
+              type: reduce
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              reducer: last
+              settings:
+                mode: dropNN
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              refId: C
+              type: threshold
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 0
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        isPaused: false
+        labels:
+          severity: warning
+          source: arhugula-kit
+        annotations:
+          summary: "An evaluation primitive fell below its alignment floor."
+          description: "At least one gen_ai.eval.alignment_floor.drift_detected span event in the last 10 minutes. The harness writes the event only when the current value is below the threshold the operator configured. Run `arhugula eval drift show` for the values."
+          threshold_source: "Reference 7.2: the harness emits the event only when current value < the operator's threshold_value, so any event is a breach. The floor itself has no default in code; the operator sets it."
+          tuning: "The drift threshold itself is the operator's alignment-floor setting, not a value in this rule; this rule fires on any drift event."

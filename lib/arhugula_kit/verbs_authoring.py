@@ -355,8 +355,12 @@ def _validator_test(args: argparse.Namespace) -> int:
 
 
 def _pause_enable(args: argparse.Namespace) -> int:
-    set_feature(deploy.open_deployment(), "durable-pause", True)
-    say("durable pause: on. A run that pauses at a gate can be continued with `arhugula resume`.")
+    deployment = set_feature(deploy.open_deployment(), "durable-pause", True)
+    say("durable pause: on. A run you put on hold at a gate is journalled, and "
+        "`arhugula gate approve` or `arhugula resume` continues it later.")
+    if "webhook_delivery_composer_config" not in rendered(deployment):
+        say("To answer `hold` at a gate the runtime also needs somewhere to send the "
+            "notification: arhugula webhook set <url>")
     return Exit.OK
 
 
@@ -441,45 +445,84 @@ def _webhook_clear(args: argparse.Namespace) -> int:
 SIGNING_KEY_IDS = ("harness-runtime-dev", "harness-cost-attribution-v1")
 PRIVATE_KEY = "audit-ed25519.pem"
 PUBLIC_KEY = "audit-ed25519.pub.pem"
+RECORD_KEY = render.RECORD_KEY
+RECORD_PUBLIC_KEY = "audit-cutover-ed25519.pub.pem"
+RECORD_KEY_ID = render.RECORD_KEY_ID
 KEY_MAP = "signing-key-map.json"
 
 
 def _audit_keygen(args: argparse.Namespace) -> int:
+    """Two keys: one signs audit entries, the other signs each ledger's cutover record.
+
+    The runtime requires the record key to be different key material from the entry key,
+    so that a leaked entry key cannot rewrite which entries a ledger must hold.
+    """
     deployment = deploy.open_deployment()
     keys = deployment.home.keys
     keys.mkdir(mode=0o700, exist_ok=True)
     keys.chmod(0o700)
-    made = runtime.call(
+    entry = runtime.call(
         deployment.home, "audit-keygen", private=str(keys / PRIVATE_KEY), public=str(keys / PUBLIC_KEY)
     )
+    record = runtime.call(
+        deployment.home, "audit-keygen", private=str(keys / RECORD_KEY), public=str(keys / RECORD_PUBLIC_KEY)
+    )
     key_map = {
-        f"ed25519:{key_id}": {
+        **{
+            f"ed25519:{key_id}": {
+                "kind": "local-ed25519-public",
+                "public_key_path": PUBLIC_KEY,
+                "spki_sha256": entry["identity"],
+            }
+            for key_id in SIGNING_KEY_IDS
+        },
+        f"ed25519:{RECORD_KEY_ID}": {
             "kind": "local-ed25519-public",
-            "public_key_path": PUBLIC_KEY,
-            "spki_sha256": made["identity"],
-        }
-        for key_id in SIGNING_KEY_IDS
+            "public_key_path": RECORD_PUBLIC_KEY,
+            "spki_sha256": record["identity"],
+        },
     }
     (keys / KEY_MAP).write_text(json.dumps(key_map, indent=2) + "\n", encoding="utf-8")
-    say(f"wrote {keys / PRIVATE_KEY} (mode 0600): the signing key. Back it up; it is in no archive.")
-    say(f"wrote {keys / PUBLIC_KEY} and {keys / KEY_MAP}: what `audit verify` reads.")
-    say(f"key identity: {made['identity']}")
+    say(f"wrote {keys / PRIVATE_KEY} (mode 0600): signs every audit entry.")
+    say(f"wrote {keys / RECORD_KEY} (mode 0600): signs each ledger's cutover record.")
+    say(f"wrote the two public keys and {keys / KEY_MAP}: what `audit verify --signatures` reads.")
+    say("Back up both private keys; they are in no archive.")
     say("next: arhugula audit enable")
     return Exit.OK
 
 
 def _audit_enable(args: argparse.Namespace) -> int:
     deployment = deploy.open_deployment()
-    if not (deployment.home.keys / PRIVATE_KEY).is_file():
-        raise KitError(Exit.PRECONDITION, "there is no signing key yet", fix="arhugula audit keygen")
-    set_feature(deployment, "audit-signing", True)
+    missing = [name for name in (PRIVATE_KEY, RECORD_KEY) if not (deployment.home.keys / name).is_file()]
+    if missing:
+        raise KitError(
+            Exit.PRECONDITION,
+            f"there is no {' and no '.join(missing)} under {deployment.home.keys}",
+            fix="arhugula audit keygen",
+        )
+    deployment = set_feature(deployment, "audit-signing", True)
+    before = [
+        t for t in render.targets(deployment.spec, deployment.home)
+        if t.name not in deployment.spec.cutover_ledgers
+    ]
     say("audit signing: on. Every audit entry of every later run is signed with the local key.")
+    if before:
+        say("")
+        say("These ledgers already hold entries written before signing was on:")
+        for target in before:
+            say(f"  {target.label}")
+        say("Their new entries are signed, but an earlier unsigned entry never verifies, so")
+        say("`audit verify --signatures` is not available for them; `audit verify` checks")
+        say("their hash chain. A project attached from now on is signed from its first")
+        say("entry and verifies in full.")
     return Exit.OK
 
 
 def _audit_disable(args: argparse.Namespace) -> int:
     set_feature(deploy.open_deployment(), "audit-signing", False)
     say("audit signing: off. Entries already written keep their signatures.")
+    say("Entries written from now on are unsigned, and a ledger that holds them no longer "
+        "passes `audit verify --signatures`.")
     return Exit.OK
 
 
@@ -488,12 +531,21 @@ def _audit_status(args: argparse.Namespace) -> int:
     keys = deployment.home.keys
     signing = rendered(deployment).get("audit_signing", {})
     say(f"backend:     {signing.get('backend', 'none')}")
-    say(f"signing key: {'present' if (keys / PRIVATE_KEY).is_file() else 'absent'} ({keys / PRIVATE_KEY})")
-    say(f"key map:     {'present' if (keys / KEY_MAP).is_file() else 'absent'} ({keys / KEY_MAP})")
+    for label, name in (("entry key", PRIVATE_KEY), ("record key", RECORD_KEY), ("key map", KEY_MAP)):
+        say(f"{label + ':':12} {'present' if (keys / name).is_file() else 'absent'} ({keys / name})")
+    say("")
+    rows = []
     for target in render.targets(deployment.spec, deployment.home):
         sidecar = target.state / "state-ledger" / "audit-entries.jsonl"
         count = sum(1 for _ in sidecar.open("rb")) if sidecar.is_file() else 0
-        say(f"{target.label}: {count} audit entries ({sidecar})")
+        if target.name not in deployment.spec.cutover_ledgers:
+            verifies = "hash chain only" + (": it began unsigned" if signing else ": signing is off")
+        elif render.cutover_record(target).is_file():
+            verifies = "in full: signed from its first entry"
+        else:
+            verifies = "in full, from its first run (the runtime writes its cutover record then)"
+        rows.append((target.label, str(count), verifies))
+    table(rows, header=("project", "audit entries", "verifies"))
     return Exit.OK
 
 
@@ -506,16 +558,29 @@ def _audit_verify(args: argparse.Namespace) -> int:
         "--pause-journal-dir", deployment.home.pause_journal,
         "--last-n", str(args.last_n),
     ]
-    key_map = deployment.home.keys / KEY_MAP
-    if key_map.is_file() and args.signatures:
-        words += ["--signing-key-map", key_map]
+    if args.signatures:
+        key_map, record = deployment.home.keys / KEY_MAP, render.cutover_record(target)
+        if not key_map.is_file():
+            raise KitError(Exit.PRECONDITION, f"there is no key map at {key_map}", fix="arhugula audit keygen")
+        if not record.is_file():
+            raise KitError(
+                Exit.PRECONDITION,
+                f"{target.label} has no cutover record ({record}). The runtime writes it at the "
+                "first run of a ledger while signing is on; a ledger that began unsigned has none "
+                "and cannot be signature-verified",
+                fix="check the hash chain with `arhugula audit verify`; turn signing on before a "
+                "project's first run to have it verify in full",
+            )
+        words += ["--signing-key-map", key_map, "--cutover-record", record]
         if target.tenant_id:
             words += ["--expected-tenant", target.tenant_id]
     code = runtime.exec_tool(deployment.home.harness_inspect, words, cwd=target.repository)
+    checked = "the hash chain is intact and every entry's signature verified" if args.signatures else (
+        "the hash chain is intact (signatures were not checked; add --signatures)")
     meaning = {
-        0: "the hash chain is intact (and signatures verified, when --signatures was given)",
+        0: checked,
         3: "UNVERIFIED: the inspector lacked an input it needs; its message above names it",
-        4: "verification ran and FAILED",
+        4: "verification ran and FAILED; the message above names the entry",
     }
     say(f"\nharness-inspect exit {code}: {meaning.get(code, 'see the message above')}")
     return code
@@ -768,7 +833,7 @@ VERBS: tuple[Verb, ...] = (
         (
             PROJECT_ARG,
             Arg(("--last-n",), "how many recent entries to print (default: 5)", {"type": int, "default": 5}),
-            Arg(("--signatures",), "also verify signatures against the local key map", {"action": "store_true"}),
+            Arg(("--signatures",), "also verify every entry's signature and the ledger's cutover record", {"action": "store_true"}),
         ),
         example="arhugula audit verify --signatures",
     ),

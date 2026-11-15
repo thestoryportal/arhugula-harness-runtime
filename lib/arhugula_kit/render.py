@@ -15,27 +15,33 @@ import json
 import re
 import tomllib
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from arhugula_kit import providers
 from arhugula_kit.errors import Exit, KitError
-from arhugula_kit.layout import KIT_ROOT, Home
+from arhugula_kit.layout import KIT_ROOT, STACK_PORTS, Home
 from arhugula_kit.spec import Spec
 
 __all__ = [
     "Fragment",
     "Target",
+    "cutover_record",
     "deep_merge",
     "fragments",
     "header",
     "render_config",
+    "with_new_cutover_ledgers",
     "targets",
     "write_installation_state",
 ]
 
-OTLP_ENDPOINT = "http://127.0.0.1:4317"
+AUDIT_SIGNING = "audit-signing"  # the feature fragment that turns the local signer on
+RECORD_KEY_ID = "arhugula-cutover-record"
+RECORD_KEY = "audit-cutover-ed25519.pem"
+CUTOVER_RECORD = "audit-cutover-record.json"
+OTLP_ENDPOINT = f"http://127.0.0.1:{STACK_PORTS['OTLP gRPC']}"
 SERVICE_NAME = "arhugula-harness"
 PLACEHOLDER = re.compile(r"\{\{[A-Z_]+\}\}")
 
@@ -271,6 +277,51 @@ def _base(spec: Spec, home: Home, target: Target) -> dict[str, Any]:
     return {"runtime": runtime}
 
 
+def cutover_record(target: Target) -> Path:
+    return target.state / "state-ledger" / CUTOVER_RECORD
+
+
+def ledger_is_empty(target: Target) -> bool:
+    """Whether a target's ledger has no history yet, so its first run can be a signed one."""
+    ledger = target.state / "state-ledger"
+    return not any(
+        path.is_file() and path.stat().st_size > 0
+        for path in (ledger / "state.jsonl", ledger / "audit-entries.jsonl")
+    )
+
+
+def with_new_cutover_ledgers(spec: Spec, home: Home) -> Spec:
+    """Record every still-empty ledger as signed from its first entry, while signing is on.
+
+    The runtime writes a ledger's cutover record at its first signed run, and refuses to
+    start on a ledger that has entries and no record. So the decision is taken once, while
+    the ledger is empty, and stored; it is never re-derived from what is on disk later.
+    A record that goes missing afterwards is the runtime's to refuse, loudly.
+    """
+    if AUDIT_SIGNING not in spec.features:
+        return spec
+    fresh = [
+        target.name
+        for target in targets(spec, home)
+        if target.name not in spec.cutover_ledgers and ledger_is_empty(target)
+    ]
+    return replace(spec, cutover_ledgers=(*spec.cutover_ledgers, *fresh)) if fresh else spec
+
+
+def _cutover(spec: Spec, home: Home, target: Target) -> dict[str, Any]:
+    """The cutover-record settings for a ledger signed from its first entry, else nothing."""
+    if AUDIT_SIGNING not in spec.features or target.name not in spec.cutover_ledgers:
+        return {}
+    return {
+        "runtime": {
+            "audit_cutover_record_key_id": RECORD_KEY_ID,
+            "audit_cutover_record_path": str(cutover_record(target)),
+            "audit_ledger_binding_id": target.name or "default",
+            "audit_signing": {"local_key_paths": {RECORD_KEY_ID: str(home.keys / RECORD_KEY)}},
+        }
+    }
+
+
 def render_config(
     spec: Spec, home: Home, target: Target, known: Mapping[str, Fragment]
 ) -> dict[str, Any]:
@@ -280,6 +331,7 @@ def render_config(
     for name in spec.features:
         text = _resolve(known[name].body, values, where=f"fragment {name}")
         document = deep_merge(document, tomllib.loads(text))
+    document = deep_merge(document, _cutover(spec, home, target))
     document = deep_merge(document, _resolve_tree(spec.overlay, values, where="the overlay"))
     project_overlay = spec.project_overlays.get(target.name, {})
     return deep_merge(

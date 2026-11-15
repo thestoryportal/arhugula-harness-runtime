@@ -6,9 +6,10 @@ import argparse
 import json
 import os
 import shutil
+import subprocess
 from pathlib import Path
 
-from arhugula_kit import deploy, detect, initflow, preflight
+from arhugula_kit import dependencies, deploy, detect, initflow, lima, preflight, vm
 from arhugula_kit.errors import Exit, KitError
 from arhugula_kit.layout import Home
 from arhugula_kit.preflight import Stage, Subject
@@ -24,16 +25,25 @@ def _doctor(args: argparse.Namespace) -> int:
     raw = json.loads(deployment.home.spec_file.read_text(encoding="utf-8"))
     print("Surveying this machine (nothing is changed)...")
     machine = detect.survey(
+        deployment.home,
         ollama_host=deployment.spec.ollama_host,
         lima_home=deployment.spec.observability.lima_home or None,
     )
+    print("\nDependencies:")
+    for index, (dependency, state) in enumerate(dependencies.report(machine, deployment.home), start=1):
+        word = "ok" if state.ready else ("MISSING" if dependency.need is dependencies.Need.REQUIRED else "absent")
+        print(f"  {word:7}  D{index:<2} {dependency.title}: {state.detail}")
+        if not state.ready:
+            for setup in dependency.setup:
+                print(f"           set it up: {setup.command}")
+    print("\nPreflight:")
     subject = Subject(machine, raw, deployment.home)
     results = [
         result
         for stage in (Stage.MACHINE, Stage.INSTALLED, Stage.GENERATED)
         for result in preflight.run_stage(stage, subject)
     ]
-    preflight.report(results)
+    preflight.report(results, consequence="doctor changes nothing")
     print("\nEvery check passed or is a warning.")
     return Exit.OK
 
@@ -47,10 +57,11 @@ def _reverify_under_uv(home: Home, *flags: str) -> int:
 def _stack_is_up(deployment: deploy.Deployment) -> bool:
     from arhugula_kit import observability
 
-    return deployment.spec.observability.enabled and observability.is_up(deployment)
+    return observability.is_up(deployment)
 
 
-def _refuse_while_running(deployment: deploy.Deployment, action: str) -> None:
+def _refuse_while_daemon_runs(deployment: deploy.Deployment, action: str) -> None:
+    """The environment is about to be replaced; a daemon running from it must stop first."""
     from arhugula_kit import daemon
 
     running = daemon.running(deployment.home)
@@ -61,12 +72,17 @@ def _refuse_while_running(deployment: deploy.Deployment, action: str) -> None:
             f"stop it before you {action}",
             fix="arhugula daemon stop",
         )
-    if _stack_is_up(deployment):
+
+
+def _refuse_while_vm_runs(deployment: deploy.Deployment, action: str) -> None:
+    """The home is about to move or go; the VM's disk and the stack's files live under it."""
+    machine = lima.find(vm.kit_ref(deployment.home))
+    if (machine is not None and machine.running) or _stack_is_up(deployment):
         raise KitError(
             Exit.PRECONDITION,
-            f"the observability stack is up and reads files under this home; take it down "
-            f"before you {action}",
-            fix="arhugula observability down",
+            f"the virtual machine or the observability stack is running from this home; "
+            f"stop them before you {action}",
+            fix="arhugula observability down --stop-vm",
         )
 
 
@@ -87,51 +103,78 @@ def _relocate(args: argparse.Namespace) -> int:
         )
     if not new.root.parent.is_dir():
         raise KitError(Exit.PRECONDITION, f"{new.root.parent} does not exist")
-    _refuse_while_running(deployment, "relocate")
+    _refuse_while_daemon_runs(deployment, "relocate")
+    _refuse_while_vm_runs(deployment, "relocate")
+    if lima.find(vm.kit_ref(old)) is not None and lima.socket_path_budget(new.lima, vm.kit_ref(new).name) < 0:
+        raise KitError(
+            Exit.PRECONDITION,
+            f"{new.root} is too long a path for the virtual machine: macOS limits a socket "
+            "path to 104 bytes and Lima keeps its sockets under the home",
+            fix="choose a new home with a shorter path",
+        )
     print(f"Moving {old.root} to {new.root} ...")
     if new.root.exists():
         new.root.rmdir()
     shutil.move(str(old.root), str(new.root))
     print("Moved. Rebuilding the environment and regenerating every config for the new path.")
+    print("The trace stack stays down after a move; start it with: arhugula observability up")
     return _reverify_under_uv(new, "--reinstall")
 
 
 def _upgrade(args: argparse.Namespace) -> int:
+    """Move to another pin. The environment in use stays until the new one is built.
+
+    `bin/install.sh` builds the new pin and passes upstream's packaging gate before it
+    touches the environment, keeps the earlier one at `env.rollback`, and puts it back if
+    the new one cannot be completed. The PIN file changes only after that succeeded.
+    """
     deployment = deploy.open_deployment()
     home = deployment.home
     pin_file = home.kit / "PIN"
     current = pin_file.read_text(encoding="utf-8").strip()
     rollback = home.root / "env.rollback"
+    installer = str(home.kit / "bin" / "install.sh")
     if args.rollback:
         if not rollback.is_dir():
             raise KitError(Exit.PRECONDITION, f"there is no earlier environment at {rollback}")
         previous = (rollback / ".arhugula-pin").read_text(encoding="utf-8").strip()
-        _refuse_while_running(deployment, "roll back")
-        shutil.rmtree(home.env)
+        _refuse_while_daemon_runs(deployment, "roll back")
+        aside = home.root / "env.replaced"
+        shutil.rmtree(aside, ignore_errors=True)
+        home.env.rename(aside)
         rollback.rename(home.env)
+        aside.rename(rollback)
         pin_file.write_text(previous + "\n", encoding="utf-8")
-        print(f"Rolled back to {previous}. Re-verifying.")
+        print(f"Rolled back to {previous}. The environment it replaced is kept at {rollback}. Re-verifying.")
         return _reverify_under_uv(home)
     wanted = (args.pin or current).strip()
     if len(wanted) != 40 or any(c not in "0123456789abcdef" for c in wanted):
         raise KitError(Exit.USAGE, "--pin takes a full 40-character commit id of upstream `main`")
-    _refuse_while_running(deployment, "upgrade")
+    _refuse_while_daemon_runs(deployment, "upgrade")
     if wanted == current and not args.reinstall:
         print(f"The deployment is already at {current}. Pass --reinstall to rebuild it.")
         return Exit.OK
-    shutil.rmtree(rollback, ignore_errors=True)
-    home.env.rename(rollback)
+    print(f"Upgrading {current[:8]} -> {wanted[:8]}. The environment in use stays until the new one is built.")
+    code = subprocess.call([installer, str(home.root), "--reinstall", "--pin", wanted])
+    if code != 0:
+        raise KitError(
+            Exit.EXTERNAL_TOOL,
+            f"the install of {wanted[:8]} stopped (exit {code}); its message is above. "
+            f"The deployment is unchanged at {current[:8]}",
+            fix=f"logs are under {home.logs}",
+        )
     pin_file.write_text(wanted + "\n", encoding="utf-8")
-    print(f"Upgrading {current[:8]} -> {wanted[:8]}. The earlier environment is kept at "
-          f"{rollback} (`arhugula upgrade --rollback`).")
-    return _reverify_under_uv(home, "--reinstall")
+    print(f"Installed {wanted[:8]}. The earlier environment is kept at {rollback} "
+          "(`arhugula upgrade --rollback`). Re-verifying.")
+    return _reverify_under_uv(home)
 
 
 def _uninstall(args: argparse.Namespace) -> int:
     deployment = deploy.open_deployment()
     home = deployment.home
     removable = [home.env, home.root / "env.rollback", home.dist, home.upstream, home.config,
-                 home.run, home.logs, home.bin, home.observability]
+                 home.run, home.logs, home.bin, home.observability, home.lima,
+                 home.root / "AGENTS.md", home.root / "CLAUDE.md"]
     kept = [home.state, home.keys, home.secrets, home.backups]
     if args.delete_state:
         removable += kept
@@ -145,7 +188,12 @@ def _uninstall(args: argparse.Namespace) -> int:
     if not args.yes:
         print("\nNothing was removed. Run again with --yes to remove these.")
         return Exit.OK
-    _refuse_while_running(deployment, "uninstall")
+    _refuse_while_daemon_runs(deployment, "uninstall")
+    _refuse_while_vm_runs(deployment, "uninstall")
+    machine = lima.find(vm.kit_ref(home))
+    if machine is not None:
+        machine.delete()
+        print(f"deleted the virtual machine {machine.name}")
     for path in removable:
         if path.is_symlink() or path.is_file():
             path.unlink()

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import fcntl
 import os
+import pty
 import subprocess
 import sys
+import termios
 import threading
 import time
 from collections.abc import Sequence
@@ -78,30 +81,58 @@ def exec_logged(
 ) -> int:
     """Run a runtime tool attached to this terminal, copying its stderr to a log file.
 
-    stdin and stdout stay the terminal's, so a gate can ask and the operator can answer.
-    stderr is copied byte for byte as it arrives, so a prompt without a newline still
-    appears at once. The log file is what `arhugula logs` and the logs pipeline read.
+    stdin and stdout stay the terminal's. stderr is where the runtime prints its progress
+    and asks at an approval gate, and the runtime asks only when stderr is a terminal. So
+    when this process has a terminal, the child's stderr is a pseudo-terminal that is
+    copied, byte for byte as it arrives, to the real one and to the log; without a
+    terminal it is a pipe, and the runtime answers a gate as it does for any unattended
+    run. The log file is what `arhugula logs` and the logs pipeline read.
     """
     log_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%dT%H%M%S")
     log_path = log_dir / f"{label}-{stamp}-{os.getpid()}.log"
     argv = [str(program), *(str(word) for word in words)]
+    attended = sys.stderr.isatty()
+    if attended:
+        reader, child_stderr = pty.openpty()
+        fcntl.ioctl(child_stderr, termios.TIOCSWINSZ, fcntl.ioctl(2, termios.TIOCGWINSZ, b"\0" * 8))
+    else:
+        reader, child_stderr = os.pipe()
     with log_path.open("wb") as log:
         log.write((" ".join(argv) + "\n").encode())
-        child = subprocess.Popen(argv, cwd=cwd, stderr=subprocess.PIPE, env={**os.environ, **(env or {})})
-        assert child.stderr is not None
-        stream = child.stderr
+        try:
+            child = subprocess.Popen(argv, cwd=cwd, stderr=child_stderr, env={**os.environ, **(env or {})})
+        except BaseException:
+            os.close(reader)
+            raise
+        finally:
+            os.close(child_stderr)
 
         def copy() -> None:
-            while chunk := os.read(stream.fileno(), 65536):
+            while True:
+                try:
+                    chunk = os.read(reader, 65536)
+                except OSError:  # a pseudo-terminal reports its closed far end as an error
+                    break
+                if not chunk:
+                    break
                 sys.stderr.buffer.write(chunk)
                 sys.stderr.buffer.flush()
-                log.write(chunk)
+                log.write(chunk.replace(b"\r\n", b"\n"))
                 log.flush()
 
         copier = threading.Thread(target=copy, daemon=True)
         copier.start()
-        code = child.wait()
+        while True:
+            try:
+                code = child.wait()
+                break
+            except KeyboardInterrupt:
+                # Ctrl-C reaches the child too (same terminal). It is the runtime's to
+                # handle: it drains and exits, and this process waits for that.
+                continue
         copier.join()
+        os.close(reader)
         log.write(f"exit: {code}\n".encode())
-    return code
+    # A child ended by a signal reports as the shell does: 128 plus the signal number.
+    return code if code >= 0 else 128 - code

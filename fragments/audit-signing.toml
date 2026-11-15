@@ -1,6 +1,6 @@
 #: title = Audit signing
-#: summary = Every audit entry is signed with a local Ed25519 key, so `arhugula audit verify --signatures` can prove the ledger was written by this deployment.
-#: needs = a signing key: arhugula audit keygen
+#: summary = Every audit entry is signed with a local Ed25519 key. A ledger that is signed from its first entry also gets a cutover record, and then verifies in full with `arhugula audit verify --signatures`.
+#: needs = the two keys: arhugula audit keygen
 
 [runtime.audit_signing]
 backend = "local-ed25519"
