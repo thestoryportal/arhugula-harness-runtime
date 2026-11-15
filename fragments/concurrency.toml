@@ -1,0 +1,6 @@
+#: title = Bounded sub-agent concurrency
+#: summary = Lowers the shared sub-agent dispatch budget from 256 to 16 frames, which keeps a parallel or hierarchical workflow from overloading a local model server. At the cap, admission fails at once; it never queues.
+#: needs = nothing
+
+[runtime]
+sub_agent_dispatch_max_workers = 16

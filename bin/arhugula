@@ -1,0 +1,11 @@
+#!/bin/zsh
+# The operator command for this deployment. It runs the kit under the deployment's own
+# interpreter, so it needs nothing on the machine beyond what `init` installed.
+set -u
+KIT=${0:A:h:h}
+PYTHON=$KIT:h/env/bin/python
+if [[ ! -x $PYTHON ]]; then
+  print -u2 "arhugula: no harness environment at $KIT:h/env. Run $KIT/init first."
+  exit 3
+fi
+PYTHONPATH=$KIT/lib exec $PYTHON -m arhugula_kit "$@"

@@ -1,0 +1,8 @@
+#: title = Span store tuning
+#: summary = Keeps spans in the local span store for 30 days instead of 7 and exports in smaller, more frequent batches.
+#: needs = nothing
+
+[runtime.collector]
+sqlite_retention_days = 30
+batch_window_seconds = 2
+batch_size = 128

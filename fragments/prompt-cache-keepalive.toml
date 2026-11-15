@@ -1,0 +1,7 @@
+#: title = Anthropic prompt cache keep-alive
+#: summary = While a daemon runs, a ping every 240 seconds keeps the Anthropic prompt cache warm. It affects only the Anthropic API provider and only the daemon.
+#: needs = the Anthropic API provider and a running daemon
+
+[runtime]
+prompt_cache_keepalive = true
+prompt_cache_prewarm_model = "claude-haiku-4-5"

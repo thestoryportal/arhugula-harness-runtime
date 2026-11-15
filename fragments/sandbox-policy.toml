@@ -1,0 +1,5 @@
+#: title = Explicit sandbox decision policy
+#: summary = Declares the sandbox decision policy carrier. At this pin the table has no fields: declaring it selects the runtime's default policy explicitly instead of implicitly.
+#: needs = nothing
+
+[runtime.sandbox_decision_policy]

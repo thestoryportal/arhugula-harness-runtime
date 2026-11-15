@@ -1,0 +1,7 @@
+#: title = Memory
+#: summary = The harness captures run events and turns, and adds a memory packet to each prompt. Promotion to long-term memory waits for your review (`arhugula memory review`).
+#: needs = nothing
+
+[runtime.memory]
+enabled = true
+root_path = "{{TARGET_STATE}}/memory"

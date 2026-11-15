@@ -1,0 +1,6 @@
+#: title = Managed agents
+#: summary = Declares the managed-agents dispatch carrier. Upstream binds it only on the managed-cloud deployment surface with a client supplied from Python, so on this local deployment it has no effect.
+#: needs = a managed-cloud deployment (an upstream limit for this kit)
+
+[runtime.managed_agents_config]
+step_timeout_seconds = 600.0

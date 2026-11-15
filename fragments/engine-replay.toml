@@ -1,0 +1,6 @@
+#: title = Engine output replay
+#: summary = Step outputs are kept in a durable event history, so a resumed run rehydrates the outputs of steps that already ran instead of losing them.
+#: needs = nothing
+
+[runtime]
+engine_output_replay = true

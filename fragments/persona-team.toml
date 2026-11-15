@@ -1,0 +1,6 @@
+#: title = Team persona
+#: summary = Classifies the deployment as `team-binding` instead of `solo-developer`. The persona drives the trace sampling base rate, redaction, and which approval floors exist.
+#: needs = nothing
+
+[runtime]
+persona_tier = "team-binding"

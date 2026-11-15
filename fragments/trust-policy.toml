@@ -1,0 +1,11 @@
+#: title = Explicit MCP trust policy
+#: summary = Replaces the runtime's default per-server trust policy with an explicit one: every MCP server is sandboxed unless you list it, and anything below the audit tier is audited. Edit the lists with `arhugula config set trust_policy.allow_list '["name"]'`.
+#: needs = nothing
+
+[runtime.trust_policy]
+default_tier = "level-2-sandbox-all"
+per_server_overrides = {}
+allow_list = []
+deny_list = []
+require_audit_below_tier = "level-3-allow-with-audit"
+tier_derivation = "conservative"

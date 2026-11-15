@@ -1,0 +1,320 @@
+"""Run, resume and inspect workflows; list, create and validate manifests."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+
+from arhugula_kit import deploy, render, runtime, workflows
+from arhugula_kit.common import PROJECT_ARG, exec_logged, resolve_manifest, say, table, target_of
+from arhugula_kit.errors import Exit, KitError
+from arhugula_kit.verbs import Arg, Verb
+
+DECISIONS = ("approve", "edit", "reject", "respond")
+
+
+def _run(args: argparse.Namespace) -> int:
+    deployment = deploy.open_deployment()
+    target = target_of(deployment, args.project)
+    manifest = resolve_manifest(deployment, target, args.manifest)
+    words: list[str | Path] = ["run", manifest, "--config", target.config_file]
+    for flag, value in (("--provider", args.provider), ("--model", args.model)):
+        if value:
+            words += [flag, value]
+    if args.json:
+        words += ["--output", "json"]
+    if args.daemon:
+        from arhugula_kit import daemon
+
+        words += ["--daemon", "--socket-path", daemon.socket_path(deployment.home, target)]
+    return _exec_harness(deployment, target, words, label="run")
+
+
+def _exec_harness(deployment: deploy.Deployment, target: render.Target, words: list[str | Path], *, label: str) -> int:
+    """Run the runtime's CLI for a target: with the project's import path, and with the
+    skill-activation hook attached when one is set."""
+    from arhugula_kit.layout import KIT_ROOT
+    from arhugula_kit.verbs_authoring import python_paths
+
+    paths = python_paths(deployment, target)
+    hook = deployment.spec.skill_hook
+    if hook:
+        program: Path = deployment.home.python
+        words = ["-m", "arhugula_kit.hookrun", hook, *words]
+        paths = [str(KIT_ROOT / "lib"), *paths]
+    else:
+        program = deployment.home.harness
+    env = {"PYTHONPATH": os.pathsep.join(paths)} if paths else {}
+    return exec_logged(
+        program, words, cwd=target.repository, log_dir=deployment.home.logs,
+        label=f"{label}-{target.name or 'default'}", env=env,
+    )
+
+
+def _resume_words(args: argparse.Namespace, decision: str | None) -> list[str]:
+    words: list[str] = []
+    if decision:
+        words += ["--hitl-response", decision]
+    for flag, value in (
+        ("--edited-proposal", getattr(args, "edited_proposal", None)),
+        ("--response-text", getattr(args, "response_text", None)),
+        ("--rejection-reason", getattr(args, "reason", None)),
+    ):
+        if value:
+            words += [flag, value]
+    if getattr(args, "json", False):
+        words += ["--output", "json"]
+    return words
+
+
+def _resume_with(args: argparse.Namespace, decision: str | None) -> int:
+    deployment = deploy.open_deployment()
+    target = target_of(deployment, args.project)
+    manifest = resolve_manifest(deployment, target, args.manifest)
+    words = ["resume", manifest, "--config", target.config_file, *_resume_words(args, decision)]
+    return _exec_harness(deployment, target, words, label="resume")
+
+
+def _resume(args: argparse.Namespace) -> int:
+    return _resume_with(args, args.decision)
+
+
+def _gate_approve(args: argparse.Namespace) -> int:
+    return _resume_with(args, "approve")
+
+
+def _gate_deny(args: argparse.Namespace) -> int:
+    return _resume_with(args, "reject")
+
+
+def _gate_list(args: argparse.Namespace) -> int:
+    from arhugula_kit.verbs_authoring import journals
+
+    deployment = deploy.open_deployment()
+    target = target_of(deployment, args.project)
+    listing = journals(deployment, target)
+    found = listing.get("pause_journals", [])
+    if not found:
+        say("no pause journal exists: no workflow is paused.")
+        return Exit.OK
+    say(f"{len(found)} pause journal(s). Each MAY hold an outstanding pause:")
+    for journal in found:
+        say(f"  {json.dumps(journal, sort_keys=True)}")
+    say("\nupstream limit: the journal records no pause-resolved marker, so this list is an "
+        "upper bound, not an inventory of outstanding pauses.")
+    say("answer one with:  arhugula gate approve <manifest>   or   "
+        "arhugula gate deny <manifest> --reason <text>")
+    return Exit.OK
+
+
+def _status(args: argparse.Namespace) -> int:
+    deployment = deploy.open_deployment()
+    target = target_of(deployment, args.project)
+    ledger = target.state / "state-ledger" / "state.jsonl"
+    if not ledger.is_file():
+        say(f"{target.label}: no run has been recorded yet ({ledger} does not exist).")
+        return Exit.OK
+    return runtime.exec_tool(
+        deployment.home.harness_inspect,
+        [
+            "--ledger-path", ledger,
+            "--runtime-config", target.config_file,
+            "--pause-journal-dir", deployment.home.pause_journal,
+            "--last-n", str(args.last),
+            *(["--json"] if args.json else []),
+        ],
+        cwd=target.repository,
+    )
+
+
+def _workflow_list(args: argparse.Namespace) -> int:
+    deployment = deploy.open_deployment()
+    target = target_of(deployment, args.project)
+    places = [("upstream examples", deployment.home.upstream / "examples")]
+    if target.name:
+        places.insert(0, (f"project {target.name}", target.repository / "workflows"))
+    rows: list[tuple[str, str, str, str, str]] = []
+    for label, directory in places:
+        for manifest in workflows.manifests_in(directory):
+            match runtime.ask(deployment.home, "validate-workflow", manifest=str(manifest)):
+                case runtime.Refusal(kind=kind):
+                    rows.append((label, manifest.name, "-", "-", f"does not load: {kind}"))
+                case facts:
+                    rows.append(
+                        (label, manifest.name, facts["workflow_id"], facts["topology_pattern"],
+                         f"{len(facts['steps'])} steps, {facts['workload_class']}")
+                    )
+    table(rows, header=("where", "file", "workflow id", "topology", "notes"))
+    return Exit.OK
+
+
+def _workflow_new(args: argparse.Namespace) -> int:
+    deployment = deploy.open_deployment()
+    target = target_of(deployment, args.project)
+    if not target.name and not args.output:
+        raise KitError(
+            Exit.PRECONDITION,
+            "a new workflow belongs to a project, and no project is current",
+            fix="arhugula project add <path>, or pass --output <file>",
+        )
+    destination = (
+        Path(args.output).expanduser().resolve()
+        if args.output
+        else target.repository / "workflows" / f"{args.name}.toml"
+    )
+    if destination.exists():
+        raise KitError(Exit.PRECONDITION, f"{destination} already exists; choose another --name")
+    text = workflows.derive(deployment.home, deployment.spec, args.topology, args.name)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(text, encoding="utf-8")
+    facts = runtime.call(deployment.home, "validate-workflow", manifest=str(destination))
+    say(f"wrote {destination}")
+    say(f"  {facts['topology_pattern']}, {len(facts['steps'])} steps, workload class "
+        f"{facts['workload_class']}; it loads in the runtime")
+    say(f"next: edit the prompts, then  arhugula run {destination.name}")
+    return Exit.OK
+
+
+def _workflow_validate(args: argparse.Namespace) -> int:
+    deployment = deploy.open_deployment()
+    target = target_of(deployment, args.project)
+    manifest = resolve_manifest(deployment, target, args.manifest)
+    match runtime.ask(deployment.home, "validate-workflow", manifest=str(manifest)):
+        case runtime.Refusal(kind=kind, message=message):
+            raise KitError(Exit.RUNTIME_REFUSED, f"{manifest} does not load ({kind}): {message}")
+        case facts:
+            say(f"{manifest} loads.")
+            say(f"  workflow id:   {facts['workflow_id']}")
+            say(f"  topology:      {facts['topology_pattern']}")
+            say(f"  workload:      {facts['workload_class']}")
+            if facts["workload_class"] not in target.workloads:
+                say(f"  warning: {target.label} does not bind the workload class "
+                    f"{facts['workload_class']}; a run would fail at bootstrap")
+            for step in facts["steps"]:
+                say(f"  step:          {step['step_id']} ({step['step_kind']})")
+    return Exit.OK
+
+
+MANIFEST = Arg(("manifest",), "a manifest file, or its name in the project's workflows/ or upstream's examples/")
+
+VERBS: tuple[Verb, ...] = (
+    Verb(
+        path=("run",),
+        summary="Run a workflow on the current project.",
+        tier="runtime",
+        handler=_run,
+        args=(
+            MANIFEST,
+            PROJECT_ARG,
+            Arg(("--provider",), "dispatch every step to this enabled provider, for this run only", {}),
+            Arg(("--model",), "dispatch every step to this model, for this run only", {}),
+            Arg(("--daemon",), "send the run to the running daemon instead of starting a process", {"action": "store_true"}),
+            Arg(("--json",), "print the full run result as JSON, including each step's reply", {"action": "store_true"}),
+        ),
+        example="arhugula run ollama-first.toml --provider ollama",
+        detail=(
+            "The config's first fallback chain serves every step. --provider and --model "
+            "override it for one run; a manifest's own binding does not select the provider. "
+            "The run's stderr is also written to the home's logs/ directory."
+        ),
+    ),
+    Verb(
+        path=("resume",),
+        summary="Resume the latest durable pause of a workflow.",
+        tier="runtime",
+        handler=_resume,
+        args=(
+            MANIFEST,
+            PROJECT_ARG,
+            Arg(("--decision",), "the answer for a held approval gate", {"choices": DECISIONS}),
+            Arg(("--edited-proposal",), "with --decision edit: a JSON object that replaces the payload", {}),
+            Arg(("--response-text",), "with --decision respond: the response text", {}),
+            Arg(("--reason",), "with --decision reject: the reason", {}),
+            Arg(("--json",), "print the result or the refusal as JSON", {"action": "store_true"}),
+        ),
+        example="arhugula resume my-workflow.toml --decision approve",
+        detail="Needs the durable pause feature: arhugula pause enable.",
+    ),
+    Verb(
+        ("gate", "list"),
+        "List the pause journals that may hold a paused workflow.",
+        "runtime",
+        _gate_list,
+        (PROJECT_ARG,),
+        example="arhugula gate list",
+    ),
+    Verb(
+        ("gate", "approve"),
+        "Approve the held gate of a paused workflow and continue it.",
+        "runtime",
+        _gate_approve,
+        (MANIFEST, PROJECT_ARG),
+        example="arhugula gate approve my-workflow.toml",
+    ),
+    Verb(
+        ("gate", "deny"),
+        "Reject the held gate of a paused workflow.",
+        "runtime",
+        _gate_deny,
+        (MANIFEST, PROJECT_ARG, Arg(("--reason",), "why the action is rejected", {})),
+        example='arhugula gate deny my-workflow.toml --reason "wrong branch"',
+    ),
+    Verb(
+        ("status",),
+        "Show the most recent entries of a project's state ledger.",
+        "runtime",
+        _status,
+        (
+            PROJECT_ARG,
+            Arg(("--last",), "how many entries to show (default: 10)", {"type": int, "default": 10}),
+            Arg(("--json",), "print the summary as JSON", {"action": "store_true"}),
+        ),
+        example="arhugula status --last 5",
+    ),
+    Verb(
+        ("workflow", "list"),
+        "List the manifests of the current project and of upstream's examples.",
+        "runtime",
+        _workflow_list,
+        (PROJECT_ARG,),
+        example="arhugula workflow list",
+    ),
+    Verb(
+        ("workflow", "new"),
+        "Create a manifest for a topology, derived from upstream's example for it.",
+        "kit",
+        _workflow_new,
+        (
+            Arg(("topology",), "the topology pattern", {"choices": tuple(workflows.TOPOLOGY_EXAMPLES)}),
+            Arg(("--name",), "the workflow id and file name", {"required": True}),
+            PROJECT_ARG,
+            Arg(("--output",), "write to this file instead of the project's workflows/ directory", {}),
+        ),
+        example="arhugula workflow new evaluator-optimizer --name tagline-review",
+    ),
+    Verb(
+        ("workflow", "validate"),
+        "Load a manifest through the runtime's loader. No provider is called.",
+        "runtime",
+        _workflow_validate,
+        (MANIFEST, PROJECT_ARG),
+        example="arhugula workflow validate tagline-review.toml",
+    ),
+    Verb(
+        ("workflow", "run"),
+        "Run a workflow (the same as `arhugula run`).",
+        "runtime",
+        _run,
+        (
+            MANIFEST,
+            PROJECT_ARG,
+            Arg(("--provider",), "dispatch every step to this enabled provider, for this run only", {}),
+            Arg(("--model",), "dispatch every step to this model, for this run only", {}),
+            Arg(("--daemon",), "send the run to the running daemon", {"action": "store_true"}),
+            Arg(("--json",), "print the full run result as JSON", {"action": "store_true"}),
+        ),
+        example="arhugula workflow run tagline-review.toml",
+    ),
+)

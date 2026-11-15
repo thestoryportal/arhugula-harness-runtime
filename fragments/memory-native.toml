@@ -1,0 +1,6 @@
+#: title = Provider-native memory
+#: summary = Allows a provider's own remote memory API in addition to the local memory packet and tools. Memory then also lives with that provider.
+#: needs = memory enabled, and a provider that offers a memory API (the Anthropic API provider)
+
+[runtime.memory]
+native_provider_enabled = true

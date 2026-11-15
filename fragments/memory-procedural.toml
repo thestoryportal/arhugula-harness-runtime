@@ -1,0 +1,6 @@
+#: title = Procedural memory proposals
+#: summary = Reviewed memory proposals target procedural memory (how to do things) instead of semantic memory (facts and decisions).
+#: needs = memory enabled
+
+[runtime.memory]
+promotion_decision = "propose_procedural"

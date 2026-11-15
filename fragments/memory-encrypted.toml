@@ -1,0 +1,6 @@
+#: title = Encrypted memory tool storage
+#: summary = The Memory tool stores its files encrypted at rest instead of as plain files.
+#: needs = memory enabled
+
+[runtime.memory_tool_backend_config]
+backend = "encrypted_filesystem"

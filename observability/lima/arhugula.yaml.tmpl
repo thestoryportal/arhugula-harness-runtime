@@ -1,0 +1,69 @@
+# The Lima VM that hosts this deployment's Docker engine (kit extension).
+#
+# `arhugula observability vm create` renders this file with the deployment home and
+# starts it. The VM is native to the host CPU, runs a headless Docker Engine with the
+# Compose plugin, and registers gVisor (`runsc`) for isolation tier 3. Docker Desktop is
+# not involved.
+#
+# The deployment home is mounted read-only at the same path, so the Compose project and
+# the run logs are visible to containers without copying.
+
+minimumLimaVersion: 2.0.0
+
+base:
+- template:_images/ubuntu-lts
+
+cpus: 2
+memory: 4GiB
+disk: 20GiB
+
+mounts:
+- location: "{{HOME}}"
+  writable: false
+
+containerd:
+  system: false
+  user: false
+
+provision:
+- mode: system
+  script: |
+    #!/bin/bash
+    set -eux -o pipefail
+    command -v docker >/dev/null 2>&1 && exit 0
+    export DEBIAN_FRONTEND=noninteractive
+    curl -fsSL https://get.docker.com | sh
+- mode: system
+  script: |
+    #!/bin/bash
+    set -eux -o pipefail
+    command -v runsc >/dev/null 2>&1 && exit 0
+    export DEBIAN_FRONTEND=noninteractive
+    curl -fsSL https://gvisor.dev/archive.key | gpg --dearmor -o /usr/share/keyrings/gvisor-archive-keyring.gpg
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases release main" > /etc/apt/sources.list.d/gvisor.list
+    apt-get update
+    apt-get install -y runsc
+    runsc install
+    systemctl restart docker
+- mode: yq
+  path: /etc/systemd/system/docker.socket.d/override.conf
+  format: ini
+  expression: .Socket.SocketUser="{{.User}}"
+
+probes:
+- script: |
+    #!/bin/bash
+    set -eux -o pipefail
+    if ! timeout 60s bash -c "until command -v docker >/dev/null 2>&1; do sleep 3; done"; then
+      echo >&2 "docker is not installed yet"
+      exit 1
+    fi
+    if ! timeout 60s bash -c "until pgrep dockerd; do sleep 3; done"; then
+      echo >&2 "dockerd is not running"
+      exit 1
+    fi
+    if ! timeout 120s bash -c "until docker info 2>/dev/null | grep -q runsc; do sleep 3; done"; then
+      echo >&2 "the gVisor runtime runsc is not registered with Docker yet"
+      exit 1
+    fi
+  hint: See "/var/log/cloud-init-output.log" in the guest

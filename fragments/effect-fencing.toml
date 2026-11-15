@@ -1,0 +1,6 @@
+#: title = Effect fencing
+#: summary = A tool step that is not idempotent runs at most once across retries and resumes of a durable engine.
+#: needs = nothing
+
+[runtime]
+effect_fencing = true

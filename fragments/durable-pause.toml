@@ -1,0 +1,6 @@
+#: title = Durable pause and resume
+#: summary = A run that pauses at a gate is journalled, so `arhugula resume` can continue it after the process has exited.
+#: needs = nothing
+
+[runtime.pause_resume_protocol_config]
+durable = true

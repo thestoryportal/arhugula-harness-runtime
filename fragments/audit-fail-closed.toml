@@ -1,0 +1,6 @@
+#: title = Fail-closed audit signing
+#: summary = A step whose audit entry cannot be signed fails instead of proceeding. Its result is held in an encrypted store until the entry is written.
+#: needs = audit signing, and the environment variable HARNESS_PROTECTED_RESULT_STORE_KEY holding a base64 Fernet key
+
+[runtime]
+audit_signing_fail_closed = true

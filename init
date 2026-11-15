@@ -1,0 +1,17 @@
+#!/bin/zsh
+# Create or reconfigure an Arhugula Harness deployment.
+#
+#   <home>/kit/init                    ask the questions in this terminal
+#   <home>/kit/init --answers <file>   replay an answers file; refuses on a missing answer
+#   <home>/kit/init --questions-json   print the questions for an agent to ask
+#   <home>/kit/init --help             every mode
+#
+# init needs only `uv` to start: it runs the kit under uv's CPython 3.12 until the
+# deployment has its own environment.
+set -u
+KIT=${0:A:h}
+if ! command -v uv >/dev/null; then
+  print -u2 "init: uv is not on PATH. Install it with: brew install uv"
+  exit 3
+fi
+PYTHONPATH=$KIT/lib exec uv run --quiet --no-project --python 3.12 -- python -m arhugula_kit init "$@"

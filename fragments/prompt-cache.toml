@@ -1,0 +1,8 @@
+#: title = Anthropic prompt cache tuning
+#: summary = Uses the one-hour prompt cache tier for the research workload and pre-warms the cache at start. It affects only the Anthropic API provider; subscription CLIs manage their own cache.
+#: needs = the Anthropic API provider: arhugula provider enable anthropic, then arhugula provider key set anthropic
+
+[runtime]
+prompt_cache_long_ttl_workloads = ["research"]
+prompt_cache_boot_prewarm = true
+prompt_cache_prewarm_model = "claude-haiku-4-5"

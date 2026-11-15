@@ -1,0 +1,6 @@
+#: title = Inter-step data flow
+#: summary = Each step receives the most recently recorded step output. Handoff and evaluator-optimizer workflows need it; peer branches of a parallel workflow are not meant to consume it.
+#: needs = nothing
+
+[runtime]
+inter_step_data_flow = true

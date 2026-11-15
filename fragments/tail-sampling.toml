@@ -1,0 +1,6 @@
+#: title = Tail-based trace sampling
+#: summary = Switches the sampler from the development default (keep every trace) to tail-based sampling, which keeps traces that hit an error, a gate or a fallback and samples the rest.
+#: needs = nothing
+
+[runtime.otel]
+sampling_mode = "TAIL_BASED_PROD"

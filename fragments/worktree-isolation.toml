@@ -1,0 +1,9 @@
+#: title = Worktree isolation and shadow checkpoints
+#: summary = Each run works in its own git worktree under the project's `.harness/worktrees`, and the runtime checkpoints the tree after every step in a shadow history.
+#: needs = the project is a git repository
+
+[runtime.path_bindings.opt_ins]
+shadow_git_enabled = true
+shadow_git_cadence = "per_step"
+worktree_isolation_enabled = true
+worktree_concurrency_cap = 2
