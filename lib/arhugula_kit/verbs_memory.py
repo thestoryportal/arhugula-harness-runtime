@@ -9,13 +9,12 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
-import tarfile
 import time
 from pathlib import Path
 from typing import Any
 
 from arhugula_kit import deploy, render, runtime
-from arhugula_kit.common import PROJECT_ARG, say, table, target_of
+from arhugula_kit.common import PROJECT_ARG, say, table, target_of, write_private_archive
 from arhugula_kit.deploy import Deployment
 from arhugula_kit.errors import Exit, KitError
 from arhugula_kit.verbs import Arg, Verb
@@ -193,16 +192,13 @@ def _export(args: argparse.Namespace) -> int:
     root = _memory_root(deployment, target)
     if not root.is_dir():
         raise KitError(Exit.PRECONDITION, f"{target.label} has no memory yet")
-    deployment.home.backups.mkdir(parents=True, exist_ok=True)
     archive = (
         Path(args.output).expanduser().resolve()
         if args.output
-        else deployment.home.backups
+        else deployment.home.private_backups()
         / f"memory-{target.name or 'default'}-{time.strftime('%Y%m%dT%H%M%S')}.tar.gz"
     )
-    with tarfile.open(archive, "w:gz") as tar:
-        tar.add(root, arcname="memory")
-    archive.chmod(0o600)
+    write_private_archive(archive, lambda tar: tar.add(root, arcname="memory"))
     say(f"wrote {archive}")
     return Exit.OK
 
@@ -217,7 +213,7 @@ def _tool_verb(command: str, summary: str, example: str) -> Verb:
         example=example,
         passthrough=True,
         detail=(
-            "Arguments after the verb go to the runtime's memory operator unchanged. "
+            "Arguments the kit does not name go to the runtime's memory operator unchanged. "
             "docs/memory.md lists each one."
         ),
     )
@@ -269,6 +265,6 @@ VERBS: tuple[Verb, ...] = (
     _tool_verb("redact", "Redact a record (a dry run unless --apply).", 'arhugula memory redact <memory-id> --reason "contains a secret" --apply'),
     _tool_verb("tombstone", "Tombstone a record (a dry run unless --apply).", 'arhugula memory tombstone <memory-id> --reason "obsolete" --apply'),
     _tool_verb("expire", "Expire a record (a dry run unless --apply).", 'arhugula memory expire <memory-id> --reason "out of date" --apply'),
-    _tool_verb("migrate", "Migrate legacy filesystem callback memory (a dry run unless --apply).", "arhugula memory migrate <legacy-root> /memories/notes.md --migration-id m1"),
-    _tool_verb("compact", "Record compaction candidate dispositions (a dry run unless --apply).", 'arhugula memory compact --source <ids> --summary "merged duplicates"'),
+    _tool_verb("migrate", "Migrate legacy filesystem callback memory (a dry run unless --apply).", "arhugula memory migrate --run-id <run-id> <legacy-root> /memories/notes.md --migration-id m1"),
+    _tool_verb("compact", "Record compaction candidate dispositions (a dry run unless --apply).", 'arhugula memory compact --run-id <run-id> c1 --source <ids> --summary "merged duplicates"'),
 )

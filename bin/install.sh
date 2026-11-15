@@ -10,8 +10,9 @@
 # The pin is the kit's PIN file unless --pin names another commit (`arhugula upgrade`).
 #
 # The environment that is in use is replaced only after the new build has passed the
-# packaging gate. It is then kept at <home>/env.rollback, and put back if the new
-# environment cannot be completed. So a failed install leaves a working deployment.
+# packaging gate. It is set aside while the new one is made and comes back if that fails
+# or is interrupted; once the new one has passed its checks, the earlier one is kept at
+# <home>/env.rollback. So a failed or interrupted install leaves a working deployment.
 #
 # Each step exits with its own code and prints what failed; nothing is retried or skipped.
 set -u
@@ -88,19 +89,26 @@ grep -q '^ready: yes' $LOGS/install-gate.log || fail 75 "packaging gate did not 
 
 step "environment"
 # The environment is replaced whole: its scripts hard-code its own path, so it is never
-# patched. The one in use is set aside first and comes back if the new one fails.
+# patched. The one in use is set aside first and comes back if the new one is not
+# completed, whether a step fails or the install is interrupted. The rollback copy from
+# an earlier upgrade is replaced only once the new environment has passed its checks.
 ROLLBACK=$HOME_DIR/env.rollback
+PREVIOUS=$HOME_DIR/env.previous
+rm -rf $PREVIOUS || fail 76 "cannot remove a leftover $PREVIOUS"
 if [[ -e $ENV ]]; then
-  rm -rf $ROLLBACK || fail 76 "cannot remove the earlier rollback environment at $ROLLBACK"
-  mv $ENV $ROLLBACK || fail 76 "cannot set the current environment aside at $ROLLBACK"
+  mv $ENV $PREVIOUS || fail 76 "cannot set the current environment aside at $PREVIOUS"
 fi
-restore() {  # put the earlier environment back, then fail with the given code and message
+put_back() {  # put the environment that was in use back in place
   rm -rf $ENV
-  if [[ -e $ROLLBACK ]]; then
-    mv $ROLLBACK $ENV && print -u2 "install: the earlier environment is back in place at $ENV"
+  if [[ -e $PREVIOUS ]]; then
+    mv $PREVIOUS $ENV && print -u2 "install: the earlier environment is back in place at $ENV"
   fi
+}
+restore() {  # put it back, then fail with the given code and message
+  put_back
   fail $1 $2
 }
+trap 'put_back; print -u2 "install: interrupted"; exit 130' INT TERM HUP
 uv venv --quiet --python $PYTHON_VERSION --no-project $ENV > $LOGS/install-env.log 2>&1 \
   || restore 76 "uv venv failed (log: $LOGS/install-env.log)"
 VIRTUAL_ENV=$ENV uv pip install --python $ENV/bin/python --require-hashes --no-deps \
@@ -122,6 +130,11 @@ PY
 for script in harness harness-inspect harness-shutdown; do
   [[ -x $ENV/bin/$script ]] || restore 78 "$ENV/bin/$script is missing"
 done
-print -n $PIN > $ENV/.arhugula-pin
-(cd $DIST && shasum -a 256 *.whl *.txt) > $DIST/SHA256SUMS
+print -n $PIN > $ENV/.arhugula-pin || restore 78 "cannot record the pin in $ENV/.arhugula-pin"
+trap - INT TERM HUP
+if [[ -e $PREVIOUS ]]; then
+  rm -rf $ROLLBACK && mv $PREVIOUS $ROLLBACK \
+    || print -u2 "install: the new environment is in place, but the earlier one could not be kept at $ROLLBACK (it is at $PREVIOUS)"
+fi
+(cd $DIST && shasum -a 256 *.whl *.txt) > $DIST/SHA256SUMS || fail 79 "cannot write $DIST/SHA256SUMS"
 step "installed ${PIN:0:8} at $ENV"

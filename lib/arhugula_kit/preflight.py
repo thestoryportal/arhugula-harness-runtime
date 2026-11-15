@@ -22,7 +22,7 @@ from typing import Any
 from arhugula_kit import dependencies, detect, lima, providers, runtime, vm
 from arhugula_kit.detect import Machine
 from arhugula_kit.errors import Exit, KitError
-from arhugula_kit.layout import STACK_PORTS, Home
+from arhugula_kit.layout import KIT_ROOT, STACK_PORTS, Home
 
 __all__ = [
     "CHECKS", "Check", "Finding", "Level", "Stage", "Subject",
@@ -70,6 +70,7 @@ class Subject:
     machine: Machine
     answers: Mapping[str, Any]
     home: Home
+    initializing: bool = False  # init is running and will start what the answers ask for
 
     @property
     def selected(self) -> tuple[str, ...]:
@@ -175,7 +176,10 @@ def _p5(s: Subject) -> Finding:
             "refuses a state root with a checkout above it (inside-checkout)",
             fix="choose a home outside every git checkout",
         )
-    strangers = detect.checkouts_inside(s.home.root, allowed=("kit", "upstream"))
+    # A kit clone made directly inside the home is not a stranger: init copies it to
+    # `<home>/kit` and goes on from there.
+    here = (KIT_ROOT.name,) if KIT_ROOT.parent == s.home.root else ()
+    strangers = detect.checkouts_inside(s.home.root, allowed=("kit", "upstream", *here))
     if strangers:
         return Finding(
             Level.FAIL,
@@ -369,16 +373,17 @@ def _p13(s: Subject) -> Finding:
             "something listens on 127.0.0.1:4317 though the observability tier is off; "
             "the harness will send its traces there",
         )
-    if not listening and not wanted:
-        return Finding(
-            Level.WARN,
-            "nothing listens on 127.0.0.1:4317: each run prints a few OTLP retry lines on "
-            "stderr and keeps its traces in the local span store only",
+    if not wanted:
+        return _ok(
+            "the observability tier is off: traces stay in the local span store, and each "
+            "run prints a few trace-export retry lines, which are harmless"
         )
+    if not listening and s.initializing:
+        return _ok("the observability tier is on; init starts the trace stack after the install")
     if not listening:
         return Finding(
             Level.WARN,
-            "the observability tier is on but nothing listens on 127.0.0.1:4317 yet",
+            "the observability tier is on but nothing listens on 127.0.0.1:4317",
             fix="arhugula observability up",
         )
     return _ok("the trace endpoint is listening and the observability tier is on")
@@ -498,7 +503,7 @@ def _p18(s: Subject) -> Finding:
             return Finding(
                 Level.FAIL,
                 f"the pause-journal root does not resolve ({kind}): {message}",
-                fix="run `arhugula init --reconfigure`",
+                fix="arhugula init --reverify",
             )
         case value:
             return _ok(f"the pause-journal root resolves to {value['pause_journal_root']}")
@@ -542,7 +547,8 @@ CHECKS: tuple[Check, ...] = (
           "a generated file still holds `{{...}}` or a `~`",
           "a kit defect: file an issue with the file attached"),
     Check("P13", "the trace endpoint matches the observability answer", Stage.MACHINE, _p13,
-          "never fails; it warns when the tier is on and nothing listens on 127.0.0.1:4317, or the reverse",
+          "never fails; it warns when the tier is on and nothing listens on 127.0.0.1:4317 outside "
+          "init, or when the tier is off and something does listen there",
           "`arhugula observability up`"),
     Check("P14", "the virtual machine and its Docker engine", Stage.MACHINE, _p14,
           "Lima is missing or older than 2.0; the home's path is too long for the VM's sockets; the chosen "
@@ -560,7 +566,7 @@ CHECKS: tuple[Check, ...] = (
           "follow `Offline embedding routing` in docs/configure.md", "embedding routing is on"),
     Check("P18", "the pause-journal root resolves", Stage.GENERATED, _p18,
           "the installation-state document names no existing pause-journal directory",
-          "`arhugula init --reconfigure`"),
+          "`arhugula init --reverify`"),
 )
 
 

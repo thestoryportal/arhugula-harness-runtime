@@ -84,9 +84,17 @@ class DependencyStage(unittest.TestCase):
 
 
 class DependencyTable(unittest.TestCase):
-    def test_every_missing_dependency_has_a_way_to_check_and_a_purpose(self):
+    def test_every_dependency_says_what_it_is_for_and_how_to_check_it(self):
         for dependency in DEPENDENCIES:
-            self.assertTrue(dependency.purpose and dependency.check_by_hand, dependency.id)
+            self.assertTrue(dependency.purpose, dependency.id)
+            # "At least one provider" is checked by the provider rows above it.
+            self.assertTrue(dependency.check_by_hand or dependency.id == "provider", dependency.id)
+
+    def test_steps_in_order_are_not_shown_as_alternatives(self):
+        text = dependencies.markdown()
+        ollama = text[text.index("Ollama\n"):text.index("The Ollama model")]
+        self.assertIn("Then:", ollama)
+        self.assertNotIn("Or:", ollama)
 
     def test_every_required_tool_has_a_setup_command(self):
         for dependency in DEPENDENCIES:

@@ -27,7 +27,7 @@ Each verb is marked with where its capability comes from:
 - [`feature`](#feature): Switch named configuration features on and off.
 - [`config`](#config): Show the generated config and set any runtime key.
 - [`policy`](#policy): Set what an approval gate may approve on its own.
-- [`mcp`](#mcp): Connect MCP tool servers.
+- [`mcp`](#mcp): Connect Model Context Protocol (MCP) tool servers.
 - [`prompt`](#prompt): Author and select versioned prompts.
 - [`skill`](#skill): Manage the skills agents can load.
 - [`validator`](#validator): Bind validators to workflow steps.
@@ -140,7 +140,7 @@ Move the deployment home to another directory.
 
 Move the whole deployment home to another directory.
 
-Moves the tree, rebuilds the environment (its scripts carry their own path), regenerates every config and the installation-state document, and has the runtime verify the state root at its new place.
+Moves the tree and rebuilds the environment, because its scripts carry their own path. Then it regenerates every config and the installation-state document, and has the runtime verify the state root at its new place.
 
 Source: kit (kit extension: added by this kit, not part of upstream).
 
@@ -636,7 +636,7 @@ arhugula provider disable gemini
 
 Set one setting of a command-line provider.
 
-Settings: `timeout_seconds`: how long one call may take, in seconds (a number); `args`: extra arguments for every call, as a JSON list of strings; `auth_args`: the arguments of the sign-in check, as a JSON list of strings; `auth_check`: whether the runtime checks sign-in at start (true or false); `response_format`: how the CLI answers: text, json or jsonl; `prompt_transport`: how the prompt is passed: stdin or arg.
+`timeout_seconds` is how long one call may take, in seconds. `auth_check` is whether the runtime checks the sign-in when it starts (true or false). `auth_args` is the arguments of the sign-in check, as a JSON list of strings; the runtime reads it for the Gemini tool only.
 
 Source: runtime (drives a capability of the harness runtime).
 
@@ -647,7 +647,7 @@ arhugula provider set <name> <key> <value>
 | Argument | Meaning |
 | --- | --- |
 | `name` | An enabled CLI provider. |
-| `key` | The setting. One of: `timeout_seconds`, `args`, `auth_args`, `auth_check`, `response_format`, `prompt_transport`. |
+| `key` | The setting. One of: `timeout_seconds`, `auth_check`, `auth_args`. |
 | `value` | The value; JSON for lists, numbers and true/false. |
 
 Example:
@@ -658,7 +658,7 @@ arhugula provider set claude_code timeout_seconds 300
 
 ### `arhugula provider unset`
 
-Return one setting of a command-line provider to the runtime's default.
+Return one setting of a command-line provider to the value the kit generates.
 
 Source: runtime (drives a capability of the harness runtime).
 
@@ -669,7 +669,7 @@ arhugula provider unset <name> <key>
 | Argument | Meaning |
 | --- | --- |
 | `name` | An enabled CLI provider. |
-| `key` | The setting. One of: `timeout_seconds`, `args`, `auth_args`, `auth_check`, `response_format`, `prompt_transport`. |
+| `key` | The setting. One of: `timeout_seconds`, `auth_check`, `auth_args`. |
 
 Example:
 
@@ -677,9 +677,31 @@ Example:
 arhugula provider unset claude_code timeout_seconds
 ```
 
+### `arhugula provider ollama-host`
+
+Set the address of the Ollama server.
+
+The server must answer at the address, or nothing changes.
+
+Source: runtime (drives a capability of the harness runtime).
+
+```text
+arhugula provider ollama-host <url>
+```
+
+| Argument | Meaning |
+| --- | --- |
+| `url` | The server address, for example http://127.0.0.1:11434. |
+
+Example:
+
+```sh
+arhugula provider ollama-host http://127.0.0.1:11434
+```
+
 ### `arhugula provider key set`
 
-Store a hosted API provider's key in the OS keyring.
+Store a hosted API provider's key in the macOS keychain.
 
 You type the key at a hidden prompt. It is never an argument and never in a file.
 
@@ -701,7 +723,7 @@ arhugula provider key set anthropic
 
 ### `arhugula provider key delete`
 
-Remove a hosted API provider's key from the OS keyring.
+Remove a hosted API provider's key from the macOS keychain.
 
 Source: runtime (drives a capability of the harness runtime).
 
@@ -1005,7 +1027,7 @@ arhugula config show [--project NAME] [--overlay]
 
 | Argument | Meaning |
 | --- | --- |
-| `--project` | Apply to this project's config only (default: every config of the deployment). |
+| `--project` | The project whose config to print (default: the current project). With --overlay: the project whose stored settings to print (default: the deployment-wide ones). |
 | `--overlay` | Print only the stored settings, as JSON. |
 
 Example:
@@ -1120,7 +1142,7 @@ arhugula policy set solo-floor-auto off
 
 ## mcp
 
-Connect MCP tool servers.
+Connect Model Context Protocol (MCP) tool servers.
 
 ### `arhugula mcp list`
 
@@ -1763,7 +1785,7 @@ arhugula audit verify [--project NAME] [--last-n LAST_N] [--signatures]
 | --- | --- |
 | `--project` | The attached project to act on (default: the current project; `default` for the deployment default). |
 | `--last-n` | How many recent entries to print (default: 5). |
-| `--signatures` | Also verify every entry's signature and the ledger's cutover record. |
+| `--signatures` | Require the full check (signatures and cutover record); refuse a ledger that cannot have it. |
 
 Example:
 
@@ -1816,7 +1838,7 @@ arhugula isolation show
 
 ### `arhugula isolation enable`
 
-Enable tier 3: tools run under gVisor in the Lima VM.
+Enable tier 3: tools run under gVisor in the Lima virtual machine.
 
 Source: runtime (drives a capability of the harness runtime).
 
@@ -2030,7 +2052,7 @@ arhugula memory export
 
 Print the memory-operation ledger.
 
-Arguments after the verb go to the runtime's memory operator unchanged. docs/memory.md lists each one.
+Arguments the kit does not name go to the runtime's memory operator unchanged. docs/memory.md lists each one.
 
 Source: runtime (drives a capability of the harness runtime).
 
@@ -2054,7 +2076,7 @@ arhugula memory operations
 
 Print one memory record.
 
-Arguments after the verb go to the runtime's memory operator unchanged. docs/memory.md lists each one.
+Arguments the kit does not name go to the runtime's memory operator unchanged. docs/memory.md lists each one.
 
 Source: runtime (drives a capability of the harness runtime).
 
@@ -2078,7 +2100,7 @@ arhugula memory inspect <memory-id> --run-id <run-id>
 
 Propose a memory from captured evidence.
 
-Arguments after the verb go to the runtime's memory operator unchanged. docs/memory.md lists each one.
+Arguments the kit does not name go to the runtime's memory operator unchanged. docs/memory.md lists each one.
 
 Source: runtime (drives a capability of the harness runtime).
 
@@ -2102,7 +2124,7 @@ arhugula memory propose <source-id> --kind fact --statement "The team deploys on
 
 Activate a proposal.
 
-Arguments after the verb go to the runtime's memory operator unchanged. docs/memory.md lists each one.
+Arguments the kit does not name go to the runtime's memory operator unchanged. docs/memory.md lists each one.
 
 Source: runtime (drives a capability of the harness runtime).
 
@@ -2126,7 +2148,7 @@ arhugula memory approve <proposal-id> --source <source-id> --injection-policy pr
 
 Deny a proposal.
 
-Arguments after the verb go to the runtime's memory operator unchanged. docs/memory.md lists each one.
+Arguments the kit does not name go to the runtime's memory operator unchanged. docs/memory.md lists each one.
 
 Source: runtime (drives a capability of the harness runtime).
 
@@ -2150,7 +2172,7 @@ arhugula memory deny <proposal-id> --source <source-id> --reason "not true" --ru
 
 Redact a record (a dry run unless --apply).
 
-Arguments after the verb go to the runtime's memory operator unchanged. docs/memory.md lists each one.
+Arguments the kit does not name go to the runtime's memory operator unchanged. docs/memory.md lists each one.
 
 Source: runtime (drives a capability of the harness runtime).
 
@@ -2174,7 +2196,7 @@ arhugula memory redact <memory-id> --reason "contains a secret" --apply
 
 Tombstone a record (a dry run unless --apply).
 
-Arguments after the verb go to the runtime's memory operator unchanged. docs/memory.md lists each one.
+Arguments the kit does not name go to the runtime's memory operator unchanged. docs/memory.md lists each one.
 
 Source: runtime (drives a capability of the harness runtime).
 
@@ -2198,7 +2220,7 @@ arhugula memory tombstone <memory-id> --reason "obsolete" --apply
 
 Expire a record (a dry run unless --apply).
 
-Arguments after the verb go to the runtime's memory operator unchanged. docs/memory.md lists each one.
+Arguments the kit does not name go to the runtime's memory operator unchanged. docs/memory.md lists each one.
 
 Source: runtime (drives a capability of the harness runtime).
 
@@ -2222,7 +2244,7 @@ arhugula memory expire <memory-id> --reason "out of date" --apply
 
 Migrate legacy filesystem callback memory (a dry run unless --apply).
 
-Arguments after the verb go to the runtime's memory operator unchanged. docs/memory.md lists each one.
+Arguments the kit does not name go to the runtime's memory operator unchanged. docs/memory.md lists each one.
 
 Source: runtime (drives a capability of the harness runtime).
 
@@ -2239,14 +2261,14 @@ arhugula memory migrate [--project NAME] [--operator OPERATOR] [--run-id RUN_ID]
 Example:
 
 ```sh
-arhugula memory migrate <legacy-root> /memories/notes.md --migration-id m1
+arhugula memory migrate --run-id <run-id> <legacy-root> /memories/notes.md --migration-id m1
 ```
 
 ### `arhugula memory compact`
 
 Record compaction candidate dispositions (a dry run unless --apply).
 
-Arguments after the verb go to the runtime's memory operator unchanged. docs/memory.md lists each one.
+Arguments the kit does not name go to the runtime's memory operator unchanged. docs/memory.md lists each one.
 
 Source: runtime (drives a capability of the harness runtime).
 
@@ -2263,7 +2285,7 @@ arhugula memory compact [--project NAME] [--operator OPERATOR] [--run-id RUN_ID]
 Example:
 
 ```sh
-arhugula memory compact --source <ids> --summary "merged duplicates"
+arhugula memory compact --run-id <run-id> c1 --source <ids> --summary "merged duplicates"
 ```
 
 
@@ -2273,9 +2295,9 @@ The trace stack: collector, Tempo and Grafana.
 
 ### `arhugula observability vm create`
 
-Create the deployment's own Lima VM with Docker Engine, Compose and gVisor.
+Create the deployment's own Lima virtual machine with Docker Engine, Compose and gVisor.
 
-The VM lives under `<home>/lima`, is built for this machine's CPU, and sees only the Compose project and the run logs, read-only. It is the deployment's only Docker engine; Docker Desktop is not used. Allow 5 to 10 minutes.
+The virtual machine lives under `<home>/lima` and is built for this machine's processor. It sees only the Compose project and the run logs, read-only. It is the deployment's only Docker engine; Docker Desktop is not used. Allow 5 to 10 minutes.
 
 Source: kit (kit extension: added by this kit, not part of upstream).
 
@@ -2293,7 +2315,7 @@ arhugula observability vm create
 
 Use a Lima instance you already have instead of the kit's VM.
 
-The instance must be built for this machine's CPU and must see the deployment home.
+The instance must be built for this machine's processor. It must also show `<home>/observability` and `<home>/logs` at the same paths as on the host; `arhugula observability up` checks that and refuses when it cannot see them.
 
 Source: kit (kit extension: added by this kit, not part of upstream).
 
@@ -2351,7 +2373,7 @@ arhugula observability vm delete
 
 Start the VM and the trace stack: collector, Tempo and Grafana.
 
-Renders the Compose project from the pinned upstream files and the kit's dashboards and alert rules, starts the VM (creating the kit's VM if it does not exist), starts the stack, and waits until Grafana, Tempo and the trace endpoint answer on loopback.
+Renders the Compose project from the pinned upstream files and the kit's dashboards and alert rules. Starts the virtual machine, creating the kit's own if it does not exist. Starts the stack and waits until Grafana, Tempo and the trace endpoint answer on loopback.
 
 Source: kit (kit extension: added by this kit, not part of upstream).
 
@@ -2567,7 +2589,7 @@ arhugula eval sample [--primitive PRIMITIVE] [--count N] [--seed SEED] [--replac
 | `--primitive` | Which holdout primitive. One of: `routing_accuracy_holdout`, `sandbox_tier_routing_accuracy`. |
 | `--count` | How many traces to draw. |
 | `--seed` | The sampling seed; the same seed draws the same set. |
-| `--replace` | Replace an existing holdout set. |
+| `--replace` | Draw a new set; the earlier set, its reviews and its assertion files are moved aside. |
 
 Example:
 
@@ -2821,7 +2843,7 @@ arhugula agent context install [--project NAME]
 
 | Argument | Meaning |
 | --- | --- |
-| `--project` | The attached project to act on (default: the current project; `default` for the deployment default). |
+| `--project` | The attached project whose files get the section (default: the current project). |
 
 Example:
 
@@ -2841,7 +2863,7 @@ arhugula agent context show [--project NAME]
 
 | Argument | Meaning |
 | --- | --- |
-| `--project` | The attached project to act on (default: the current project; `default` for the deployment default). |
+| `--project` | The attached project whose files get the section (default: the current project). |
 
 Example:
 
@@ -2861,7 +2883,7 @@ arhugula agent context remove [--project NAME]
 
 | Argument | Meaning |
 | --- | --- |
-| `--project` | The attached project to act on (default: the current project; `default` for the deployment default). |
+| `--project` | The attached project whose files get the section (default: the current project). |
 
 Example:
 

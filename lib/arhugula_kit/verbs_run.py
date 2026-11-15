@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 
 from arhugula_kit import deploy, render, runtime, workflows
-from arhugula_kit.common import PROJECT_ARG, exec_logged, resolve_manifest, say, table, target_of
+from arhugula_kit.common import PROJECT_ARG, exec_logged, harness_command, resolve_manifest, say, table, target_of
 from arhugula_kit.errors import Exit, KitError
 from arhugula_kit.verbs import Arg, Verb
 
@@ -20,7 +20,14 @@ def _run(args: argparse.Namespace) -> int:
     target = target_of(deployment, args.project)
     manifest = resolve_manifest(deployment, target, args.manifest)
     words: list[str | Path] = ["run", manifest, "--config", target.config_file]
-    for flag, value in (("--provider", args.provider), ("--model", args.model)):
+    model = args.model
+    if args.provider and not model and args.provider in deployment.spec.providers:
+        # The runtime pairs `--provider` alone with the model named in the manifest, which
+        # belongs to another provider as often as not; the request then fails and the
+        # fallback chain quietly serves the run. "Use this provider" means with the model
+        # this deployment configured for it.
+        model = deployment.spec.model_of(args.provider)
+    for flag, value in (("--provider", args.provider), ("--model", model)):
         if value:
             words += [flag, value]
     if args.json:
@@ -33,22 +40,10 @@ def _run(args: argparse.Namespace) -> int:
 
 
 def _exec_harness(deployment: deploy.Deployment, target: render.Target, words: list[str | Path], *, label: str) -> int:
-    """Run the runtime's CLI for a target: with the project's import path, and with the
-    skill-activation hook attached when one is set."""
-    from arhugula_kit.layout import KIT_ROOT
-    from arhugula_kit.verbs_authoring import python_paths
-
-    paths = python_paths(deployment, target)
-    hook = deployment.spec.skill_hook
-    if hook:
-        program: Path = deployment.home.python
-        words = ["-m", "arhugula_kit.hookrun", hook, *words]
-        paths = [str(KIT_ROOT / "lib"), *paths]
-    else:
-        program = deployment.home.harness
-    env = {"PYTHONPATH": os.pathsep.join(paths)} if paths else {}
+    """Run the runtime's CLI for a target, attached to this terminal and logged."""
+    argv, env = harness_command(deployment, target, words)
     return exec_logged(
-        program, words, cwd=target.repository, log_dir=deployment.home.logs,
+        argv, cwd=target.repository, log_dir=deployment.home.logs,
         label=f"{label}-{target.name or 'default'}", env=env,
     )
 

@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 from arhugula_kit import deploy, preflight, render, runtime
-from arhugula_kit.common import say, table
+from arhugula_kit.common import say, table, write_private_archive
 from arhugula_kit.errors import Exit, KitError
 from arhugula_kit.verbs import Arg, Verb
 
@@ -75,26 +75,17 @@ def _status(args: argparse.Namespace) -> int:
 def _backup(args: argparse.Namespace) -> int:
     deployment = deploy.open_deployment()
     home = deployment.home
-    home.backups.mkdir(mode=0o700, parents=True, exist_ok=True)
+    home.private_backups()
     archive = (
         Path(args.output).expanduser().resolve()
         if args.output
         else home.backups / f"state-{time.strftime('%Y%m%dT%H%M%S')}.tar.gz"
     )
-    if archive.exists():
-        raise KitError(Exit.PRECONDITION, f"{archive} already exists")
-    # The archive holds the private state root, so it is private from its first byte, and a
-    # write that fails leaves no partial archive behind.
-    partial = archive.with_name(archive.name + ".partial")
-    handle = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        with os.fdopen(handle, "wb") as raw, tarfile.open(fileobj=raw, mode="w:gz") as tar:
-            tar.add(home.state, arcname="state")
-            tar.add(home.spec_file, arcname="config/init-answers.json")
-        partial.replace(archive)
-    except BaseException:
-        partial.unlink(missing_ok=True)
-        raise
+    def add(tar: tarfile.TarFile) -> None:
+        tar.add(home.state, arcname="state")
+        tar.add(home.spec_file, arcname="config/init-answers.json")
+
+    write_private_archive(archive, add)
     say(f"wrote {archive} ({_human(archive.stat().st_size)}): the state root and the answers file.")
     say("Keys under keys/ and secrets under secrets/ are not in it; back those up separately.")
     return Exit.OK
@@ -158,7 +149,7 @@ def _archive_legacy(args: argparse.Namespace) -> int:
     if not found:
         say(f"{project} holds no leftover harness state.")
         return Exit.OK
-    destination = deployment.home.backups / f"legacy-{project.name}-{time.strftime('%Y%m%dT%H%M%S')}"
+    destination = deployment.home.private_backups() / f"legacy-{project.name}-{time.strftime('%Y%m%dT%H%M%S')}"
     destination.mkdir(parents=True)
     for path in found:
         target = destination / path.relative_to(project / ".harness")

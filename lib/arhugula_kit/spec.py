@@ -132,7 +132,7 @@ def project_name_for(path: Path) -> str:
 
 
 def _refuse(message: str) -> KitError:
-    return KitError(Exit.PRECONDITION, f"answers file: {message}")
+    return KitError(Exit.PRECONDITION, message)
 
 
 def _take(raw: Mapping[str, Any], key: str, kind: type | tuple[type, ...]) -> Any:
@@ -242,7 +242,10 @@ def load(path: Path, *, known_features: tuple[str, ...]) -> Spec:
         ) from None
     except ValueError as exc:
         raise _refuse(f"{path} is not valid JSON: {exc}") from exc
-    return parse(raw, known_features=known_features)
+    try:
+        return parse(raw, known_features=known_features)
+    except KitError as refused:
+        raise KitError(refused.exit_code, f"{path}: {refused.message}", fix=refused.fix) from refused
 
 
 def save(spec: Spec, path: Path) -> None:

@@ -116,8 +116,19 @@ def attach(deployment: Deployment, client: str, image: str, command: list[str]) 
             Exit.PRECONDITION, "isolation tier 3 is not enabled", fix="arhugula isolation enable tier-3"
         )
     clients = _clients(deployment)
-    if not any(c["client_name"] == client for c in clients):
+    chosen = next((c for c in clients if c["client_name"] == client), None)
+    if chosen is None:
         raise KitError(Exit.PRECONDITION, f"no MCP client named {client!r}", fix="arhugula mcp list")
+    if chosen.get("transport") != "stdio":
+        # The runtime runs every stdio client's tools at tier 3. For any other client it
+        # derives the tier from trust and blast radius, and a driver attached to a tier 2
+        # client would run a plain container while this kit called it gVisor.
+        raise KitError(
+            Exit.PRECONDITION,
+            f"{client} is not a stdio client. The runtime runs only stdio clients' tools at "
+            "tier 3; for other clients it picks the tier itself, and this deployment "
+            "provides no other sandbox tier",
+        )
     engine = engine_of(deployment, start=True)
     pulled = engine.docker("pull", image, timeout=900)
     if not pulled.ok:

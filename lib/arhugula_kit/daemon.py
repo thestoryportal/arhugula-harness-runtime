@@ -7,7 +7,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from arhugula_kit import render
+from arhugula_kit import common, render
 from arhugula_kit.deploy import Deployment
 from arhugula_kit.errors import Exit, KitError
 from arhugula_kit.layout import Home
@@ -74,9 +74,15 @@ def start(deployment: Deployment, target: render.Target, *, wait_seconds: float 
     socket = socket_path(home, target)
     if socket.exists():
         socket.unlink()
+    # Started the same way as a one-shot run: with the project's import path and the
+    # skill-activation hook, so a workflow behaves the same through the daemon.
+    argv, extra = common.harness_command(
+        deployment, target, ["daemon", "--config", target.config_file, "--socket-path", socket]
+    )
     with log_path(home, target).open("ab") as log:
         child = subprocess.Popen(
-            [str(home.harness), "daemon", "--config", str(target.config_file), "--socket-path", str(socket)],
+            argv,
+            env={**os.environ, **extra},
             cwd=target.repository,
             stdin=subprocess.DEVNULL,
             stdout=log,

@@ -102,8 +102,8 @@ CATALOGUE: tuple[Provider, ...] = (
         caveat=(
             "Upstream marks the Codex profile HELD: the CLI's filesystem read exposure is "
             "an untested boundary. Sign in with `codex login` to use your ChatGPT "
-            "subscription; an API key makes every call a paid call. Codex is never the "
-            "default primary."
+            "subscription; an API key makes every call a paid call. Init does not propose "
+            "Codex as the default provider when you selected another one."
         ),
     ),
     Provider(
@@ -185,6 +185,7 @@ class Status(StrEnum):
     NOT_SIGNED_IN = "not-signed-in"
     NOT_INSTALLED = "not-installed"
     UNREACHABLE = "unreachable"
+    MODEL_MISSING = "model-missing"  # Ollama answers, but the chosen model is not pulled
     UNVERIFIED = "unverified"  # present; the tool offers no sign-in check
 
 
@@ -266,6 +267,18 @@ def _check_cli(provider: Provider) -> ProviderState:
                 command,
                 fix="run `codex login`",
             )
+        case "antigravity":
+            # The runtime's own sign-in check for this CLI is `agy models`.
+            outcome = proc.run([command, "models"], timeout=30)
+            if outcome.ok and outcome.stdout.strip():
+                return ProviderState(provider, Status.READY, f"{version}; signed in (`agy models` answers)", command)
+            return ProviderState(
+                provider,
+                Status.NOT_SIGNED_IN,
+                f"{version}; `agy models` gave no model list",
+                command,
+                fix="run `agy` once and sign in",
+            )
         case _:
             if not version:
                 return ProviderState(
@@ -300,7 +313,7 @@ def check(provider: Provider, *, ollama_host: str, ollama_model: str = "") -> Pr
             if ollama_model and ollama_model not in models:
                 return ProviderState(
                     provider,
-                    Status.NOT_SIGNED_IN,
+                    Status.MODEL_MISSING,
                     f"reachable at {ollama_host}; model {ollama_model} is not pulled",
                     fix=f"ollama pull {ollama_model}",
                 )

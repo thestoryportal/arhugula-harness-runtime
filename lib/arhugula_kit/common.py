@@ -7,18 +7,23 @@ import os
 import pty
 import subprocess
 import sys
+import tarfile
 import termios
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from arhugula_kit import render
 from arhugula_kit.deploy import Deployment
 from arhugula_kit.errors import Exit, KitError
+from arhugula_kit.layout import KIT_ROOT
 from arhugula_kit.verbs import Arg
 
-__all__ = ["PROJECT_ARG", "exec_logged", "resolve_manifest", "say", "table", "target_of"]
+__all__ = [
+    "PROJECT_ARG", "exec_logged", "harness_command", "python_paths",
+    "resolve_manifest", "say", "table", "target_of", "write_private_archive",
+]
 
 PROJECT_ARG = Arg(
     ("--project",),
@@ -70,9 +75,53 @@ def resolve_manifest(deployment: Deployment, target: render.Target, text: str) -
     )
 
 
+def write_private_archive(archive: Path, add: Callable[[tarfile.TarFile], None]) -> None:
+    """Write a gzip tar archive that is its owner's alone from its first byte.
+
+    An archive of state or memory holds private data. A write that fails leaves no
+    partial archive, and an existing archive is never overwritten.
+    """
+    if archive.exists():
+        raise KitError(Exit.PRECONDITION, f"{archive} already exists")
+    partial = archive.with_name(archive.name + ".partial")
+    handle = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(handle, "wb") as raw, tarfile.open(fileobj=raw, mode="w:gz") as tar:
+            add(tar)
+        partial.replace(archive)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
+
+
+def python_paths(deployment: Deployment, target: render.Target) -> list[str]:
+    """Directories the runtime must import from: the project's validators/ and skills/
+    directories, then any the operator added."""
+    conventional = [target.repository / "validators", target.repository / "skills"]
+    return [str(p) for p in conventional if p.is_dir()] + list(deployment.spec.python_paths)
+
+
+def harness_command(
+    deployment: Deployment, target: render.Target, words: Sequence[str | Path]
+) -> tuple[list[str], dict[str, str]]:
+    """The runtime's CLI for a target, as argv and extra environment.
+
+    [LAW:single-enforcer] A one-shot run, a resume and the daemon are all started through
+    here, so each gets the project's import path and, when one is set, the
+    skill-activation hook. A workflow behaves the same whichever way it is started.
+    """
+    paths = python_paths(deployment, target)
+    hook = deployment.spec.skill_hook
+    if hook:
+        argv = [str(deployment.home.python), "-m", "arhugula_kit.hookrun", hook, *map(str, words)]
+        paths = [str(KIT_ROOT / "lib"), *paths]
+    else:
+        argv = [str(deployment.home.harness), *map(str, words)]
+    return argv, ({"PYTHONPATH": os.pathsep.join(paths)} if paths else {})
+
+
 def exec_logged(
-    program: Path,
-    words: Sequence[str | Path],
+    argv: Sequence[str],
     *,
     cwd: Path,
     log_dir: Path,
@@ -91,7 +140,9 @@ def exec_logged(
     log_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%dT%H%M%S")
     log_path = log_dir / f"{label}-{stamp}-{os.getpid()}.log"
-    argv = [str(program), *(str(word) for word in words)]
+    # A run log can quote prompts and tool output: it is its owner's alone.
+    os.close(os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+    argv = list(argv)
     attended = sys.stderr.isatty()
     if attended:
         reader, child_stderr = pty.openpty()

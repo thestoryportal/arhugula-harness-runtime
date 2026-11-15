@@ -54,7 +54,7 @@ GROUPS: Mapping[str, str] = {
     "prompt": "Author and select versioned prompts.",
     "skill": "Manage the skills agents can load.",
     "validator": "Bind validators to workflow steps.",
-    "mcp": "Connect MCP tool servers.",
+    "mcp": "Connect Model Context Protocol (MCP) tool servers.",
     "policy": "Set what an approval gate may approve on its own.",
     "memory": "Review and manage what the harness remembers.",
     "pause": "Durable pause and resume, and its journals.",

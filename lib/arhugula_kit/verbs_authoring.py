@@ -11,10 +11,11 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from arhugula_kit import daemon, deploy, isolation, overlay, render, runtime
-from arhugula_kit.common import PROJECT_ARG, say, table, target_of
+from arhugula_kit import audit_keys, daemon, deploy, isolation, overlay, render, runtime
+from arhugula_kit.common import PROJECT_ARG, python_paths, say, table, target_of
 from arhugula_kit.deploy import Deployment
 from arhugula_kit.errors import Exit, KitError
+from arhugula_kit.layout import KIT_ROOT
 from arhugula_kit.spec import WORKLOADS
 from arhugula_kit.verbs import Arg, Verb
 from arhugula_kit.verbs_config import SCOPE_ARG, rendered, scope_of, set_feature
@@ -190,17 +191,18 @@ def _skill_add(args: argparse.Namespace) -> int:
             fix="see docs/authoring.md, section `Write a skill`",
         )
     directory = _skills_dir(target)
-    directory.mkdir(parents=True, exist_ok=True)
-    for manifest in manifests:
-        content = manifest.with_name(manifest.name.replace(".skill.json", ".SKILL.md"))
+    # Every pair is checked before any file is copied: a refusal copies nothing.
+    pairs = [(m, m.with_name(m.name.replace(".skill.json", ".SKILL.md"))) for m in manifests]
+    for manifest, content in pairs:
         if not content.is_file():
-            raise KitError(Exit.PRECONDITION, f"{manifest.name} has no matching {content.name}")
+            raise KitError(Exit.PRECONDITION, f"{manifest.name} has no matching {content.name}; nothing was copied")
         for path in (manifest, content):
             if (directory / path.name).exists():
-                raise KitError(Exit.PRECONDITION, f"{directory / path.name} already exists")
-        for path in (manifest, content):
-            shutil.copy2(path, directory / path.name)
-            say(f"copied {path.name} -> {directory}")
+                raise KitError(Exit.PRECONDITION, f"{directory / path.name} already exists; nothing was copied")
+    directory.mkdir(parents=True, exist_ok=True)
+    for path in (path for pair in pairs for path in pair):
+        shutil.copy2(path, directory / path.name)
+        say(f"copied {path.name} -> {directory}")
     listing = runtime.call(deployment.home, "skills-load", directory=str(directory))
     say(f"{len(listing['skills'])} skill(s) now load from {directory}")
     return Exit.OK
@@ -228,6 +230,17 @@ def _skill_hook_set(args: argparse.Namespace) -> int:
     name = "arhugula_kit.skillhooks:EverySkill" if args.hook == "every" else args.hook
     if ":" not in name:
         raise KitError(Exit.USAGE, "give the hook as `module:Class`, or `every` for the kit's hook")
+    target = deployment.target()
+    checked = runtime.ask(
+        deployment.home, "hook-inspect", hook=name,
+        python_paths=[str(KIT_ROOT / "lib"), *python_paths(deployment, target)],
+    )
+    if isinstance(checked, runtime.Refusal):
+        raise KitError(
+            Exit.PRECONDITION,
+            f"the hook {name} cannot be used ({checked.kind}): {checked.message}",
+            fix="save the class in the project's skills/ directory; see docs/authoring.md",
+        )
     deploy.apply(deployment, replace(deployment.spec, skill_hook=name))
     say(f"skill-activation hook: {name}")
     say("`arhugula run` now passes this hook to the runtime (a kit extension; see docs/authoring.md).")
@@ -248,13 +261,6 @@ BINDINGS = ("runtime", "validator_framework_config", "bindings")
 
 def _bindings(deployment: Deployment, scope: str) -> list[dict[str, Any]]:
     return list(overlay.get(overlay.scoped(deployment.spec, scope), BINDINGS, []))
-
-
-def python_paths(deployment: Deployment, target: render.Target) -> list[str]:
-    """Directories the runtime must import from: the project's validators/ and skills/
-    directories, then any the operator added."""
-    conventional = [target.repository / "validators", target.repository / "skills"]
-    return [str(p) for p in conventional if p.is_dir()] + list(deployment.spec.python_paths)
 
 
 def _validator_list(args: argparse.Namespace) -> int:
@@ -442,51 +448,15 @@ def _webhook_clear(args: argparse.Namespace) -> int:
 
 # --- audit ------------------------------------------------------------------------------
 
-SIGNING_KEY_IDS = ("harness-runtime-dev", "harness-cost-attribution-v1")
-PRIVATE_KEY = "audit-ed25519.pem"
-PUBLIC_KEY = "audit-ed25519.pub.pem"
-RECORD_KEY = render.RECORD_KEY
-RECORD_PUBLIC_KEY = "audit-cutover-ed25519.pub.pem"
-RECORD_KEY_ID = render.RECORD_KEY_ID
-KEY_MAP = "signing-key-map.json"
+PRIVATE_KEY = audit_keys.PRIVATE_KEY
+RECORD_KEY = audit_keys.RECORD_KEY
+KEY_MAP = audit_keys.KEY_MAP
 
 
 def _audit_keygen(args: argparse.Namespace) -> int:
-    """Two keys: one signs audit entries, the other signs each ledger's cutover record.
-
-    The runtime requires the record key to be different key material from the entry key,
-    so that a leaked entry key cannot rewrite which entries a ledger must hold.
-    """
     deployment = deploy.open_deployment()
-    keys = deployment.home.keys
-    keys.mkdir(mode=0o700, exist_ok=True)
-    keys.chmod(0o700)
-    entry = runtime.call(
-        deployment.home, "audit-keygen", private=str(keys / PRIVATE_KEY), public=str(keys / PUBLIC_KEY)
-    )
-    record = runtime.call(
-        deployment.home, "audit-keygen", private=str(keys / RECORD_KEY), public=str(keys / RECORD_PUBLIC_KEY)
-    )
-    key_map = {
-        **{
-            f"ed25519:{key_id}": {
-                "kind": "local-ed25519-public",
-                "public_key_path": PUBLIC_KEY,
-                "spki_sha256": entry["identity"],
-            }
-            for key_id in SIGNING_KEY_IDS
-        },
-        f"ed25519:{RECORD_KEY_ID}": {
-            "kind": "local-ed25519-public",
-            "public_key_path": RECORD_PUBLIC_KEY,
-            "spki_sha256": record["identity"],
-        },
-    }
-    (keys / KEY_MAP).write_text(json.dumps(key_map, indent=2) + "\n", encoding="utf-8")
-    say(f"wrote {keys / PRIVATE_KEY} (mode 0600): signs every audit entry.")
-    say(f"wrote {keys / RECORD_KEY} (mode 0600): signs each ledger's cutover record.")
-    say(f"wrote the two public keys and {keys / KEY_MAP}: what `audit verify --signatures` reads.")
-    say("Back up both private keys; they are in no archive.")
+    for line in audit_keys.generate(deployment.home):
+        say(line)
     say("next: arhugula audit enable")
     return Exit.OK
 
@@ -558,25 +528,29 @@ def _audit_verify(args: argparse.Namespace) -> int:
         "--pause-journal-dir", deployment.home.pause_journal,
         "--last-n", str(args.last_n),
     ]
-    if args.signatures:
-        key_map, record = deployment.home.keys / KEY_MAP, render.cutover_record(target)
+    key_map, record = deployment.home.keys / KEY_MAP, render.cutover_record(target)
+    # A ledger signed from its first entry is always verified in full: with its cutover
+    # record configured, the runtime's inspector accepts nothing less. Any other ledger
+    # gets the hash-chain check, and `--signatures` is refused for it with the reason.
+    full = key_map.is_file() and record.is_file()
+    if args.signatures and not full:
         if not key_map.is_file():
             raise KitError(Exit.PRECONDITION, f"there is no key map at {key_map}", fix="arhugula audit keygen")
-        if not record.is_file():
-            raise KitError(
-                Exit.PRECONDITION,
-                f"{target.label} has no cutover record ({record}). The runtime writes it at the "
-                "first run of a ledger while signing is on; a ledger that began unsigned has none "
-                "and cannot be signature-verified",
-                fix="check the hash chain with `arhugula audit verify`; turn signing on before a "
-                "project's first run to have it verify in full",
-            )
+        raise KitError(
+            Exit.PRECONDITION,
+            f"{target.label} has no cutover record ({record}). The runtime writes it at the "
+            "first run of a ledger while signing is on; a ledger that began unsigned has none "
+            "and cannot be signature-verified",
+            fix="check the hash chain with `arhugula audit verify`; turn signing on before a "
+            "project's first run to have it verify in full",
+        )
+    if full:
         words += ["--signing-key-map", key_map, "--cutover-record", record]
         if target.tenant_id:
             words += ["--expected-tenant", target.tenant_id]
     code = runtime.exec_tool(deployment.home.harness_inspect, words, cwd=target.repository)
-    checked = "the hash chain is intact and every entry's signature verified" if args.signatures else (
-        "the hash chain is intact (signatures were not checked; add --signatures)")
+    checked = "the hash chain is intact and every entry's signature verified" if full else (
+        "the hash chain is intact (this ledger carries no cutover record, so signatures were not checked)")
     meaning = {
         0: checked,
         3: "UNVERIFIED: the inspector lacked an input it needs; its message above names it",
@@ -833,7 +807,7 @@ VERBS: tuple[Verb, ...] = (
         (
             PROJECT_ARG,
             Arg(("--last-n",), "how many recent entries to print (default: 5)", {"type": int, "default": 5}),
-            Arg(("--signatures",), "also verify every entry's signature and the ledger's cutover record", {"action": "store_true"}),
+            Arg(("--signatures",), "require the full check (signatures and cutover record); refuse a ledger that cannot have it", {"action": "store_true"}),
         ),
         example="arhugula audit verify --signatures",
     ),
@@ -850,7 +824,7 @@ VERBS: tuple[Verb, ...] = (
     Verb(("isolation", "show"), "Show which isolation tiers are in use.", "runtime", _isolation_show, example="arhugula isolation show"),
     Verb(
         ("isolation", "enable"),
-        "Enable tier 3: tools run under gVisor in the Lima VM.",
+        "Enable tier 3: tools run under gVisor in the Lima virtual machine.",
         "runtime",
         _isolation_enable,
         (Arg(("tier",), "the tier to enable", {"choices": ("tier-3",)}),),

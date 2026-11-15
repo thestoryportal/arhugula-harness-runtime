@@ -6,9 +6,15 @@ import argparse
 from pathlib import Path
 
 from arhugula_kit import agentctx, deploy
-from arhugula_kit.common import PROJECT_ARG, say
+from arhugula_kit.common import say
 from arhugula_kit.errors import Exit, KitError
-from arhugula_kit.verbs import Verb
+from arhugula_kit.verbs import Arg, Verb
+
+PROJECT_ARG = Arg(
+    ("--project",),
+    "the attached project whose files get the section (default: the current project)",
+    {"metavar": "NAME"},
+)
 
 
 def _project(deployment: deploy.Deployment, given: str | None) -> str:

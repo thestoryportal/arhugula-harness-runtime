@@ -137,6 +137,12 @@ class Home:
     def backups(self) -> Path:
         return self.root / "backups"
 
+    def private_backups(self) -> Path:
+        """The backups directory, created if need be and readable by its owner only."""
+        self.backups.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.backups.chmod(0o700)
+        return self.backups
+
     @property
     def bin(self) -> Path:
         return self.root / "bin"

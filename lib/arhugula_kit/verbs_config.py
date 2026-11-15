@@ -30,8 +30,9 @@ SCOPE_ARG = Arg(
 
 def scope_of(deployment: Deployment, project: str) -> str:
     """A `--project` scope value as an overlay scope; `""` is the whole deployment."""
-    if project:
-        deployment.target(project)
+    if project in ("", "default"):
+        return ""
+    deployment.target(project)
     return project
 
 
@@ -187,13 +188,12 @@ def _provider_key_delete(args: argparse.Namespace) -> int:
     return Exit.OK
 
 
+# Only the settings the runtime reads for the provider kinds this kit configures.
 PROVIDER_SETTINGS = {
-    "timeout_seconds": "how long one call may take, in seconds (a number)",
-    "args": "extra arguments for every call, as a JSON list of strings",
-    "auth_args": "the arguments of the sign-in check, as a JSON list of strings",
-    "auth_check": "whether the runtime checks sign-in at start (true or false)",
-    "response_format": "how the CLI answers: text, json or jsonl",
-    "prompt_transport": "how the prompt is passed: stdin or arg",
+    "timeout_seconds": "how long one call may take, in seconds",
+    "auth_check": "whether the runtime checks the sign-in when it starts (true or false)",
+    "auth_args": "the arguments of the sign-in check, as a JSON list of strings; the runtime "
+    "reads it for the Gemini tool only",
 }
 
 
@@ -230,7 +230,7 @@ def _provider_unset(args: argparse.Namespace) -> int:
     kept = {k: v for k, v in settings.get(args.name, {}).items() if k != args.key}
     settings = {**{n: s for n, s in settings.items() if n != args.name}, **({args.name: kept} if kept else {})}
     deploy.apply(deployment, replace(deployment.spec, provider_settings=settings))
-    say(f"{args.name}: {args.key} is back to the runtime's default")
+    say(f"{args.name}: {args.key} is back to the value the kit generates")
     return Exit.OK
 
 
@@ -444,6 +444,24 @@ def _key_path(text: str) -> tuple[str, ...]:
     return parts if parts[0] == "runtime" else ("runtime", *parts)
 
 
+CONFIG_SHOW_PROJECT = Arg(
+    ("--project",),
+    "the project whose config to print (default: the current project). With --overlay: the "
+    "project whose stored settings to print (default: the deployment-wide ones)",
+    {"metavar": "NAME", "default": ""},
+)
+
+
+def _ollama_host(args: argparse.Namespace) -> int:
+    deployment = deploy.open_deployment()
+    if providers.ollama_models(args.url) is None:
+        raise KitError(Exit.PRECONDITION, f"no Ollama server answers at {args.url}",
+                       fix="start it, or check the address: curl <url>/api/tags")
+    deploy.apply(deployment, replace(deployment.spec, ollama_host=args.url))
+    say(f"Ollama address: {args.url}")
+    return Exit.OK
+
+
 def _config_show(args: argparse.Namespace) -> int:
     deployment = deploy.open_deployment()
     if args.overlay:
@@ -581,6 +599,10 @@ def _mcp_add(args: argparse.Namespace) -> int:
     deploy.apply(deployment, changed)
     say(f"added MCP client {args.name} ({args.transport}, {args.trust}, {args.blast_radius}).")
     say(f"check it: arhugula mcp test {args.name}")
+    if args.blast_radius != "READ_ONLY":
+        say("note: the runtime runs a client that can change things at a sandbox tier above 1. "
+            "This deployment provides tier 3 only, and only for stdio clients; a tool call that "
+            "needs a tier it does not have is refused with RT-FAIL-SANDBOX-DRIVER-UNAVAILABLE.")
     return Exit.OK
 
 
@@ -670,11 +692,11 @@ VERBS: tuple[Verb, ...] = (
             Arg(("value",), "the value; JSON for lists, numbers and true/false"),
         ),
         example="arhugula provider set claude_code timeout_seconds 300",
-        detail="Settings: " + "; ".join(f"`{key}`: {meaning}" for key, meaning in PROVIDER_SETTINGS.items()) + ".",
+        detail=" ".join(f"`{key}` is {meaning}." for key, meaning in PROVIDER_SETTINGS.items()),
     ),
     Verb(
         ("provider", "unset"),
-        "Return one setting of a command-line provider to the runtime's default.",
+        "Return one setting of a command-line provider to the value the kit generates.",
         "runtime",
         _provider_unset,
         (
@@ -684,8 +706,17 @@ VERBS: tuple[Verb, ...] = (
         example="arhugula provider unset claude_code timeout_seconds",
     ),
     Verb(
+        ("provider", "ollama-host"),
+        "Set the address of the Ollama server.",
+        "runtime",
+        _ollama_host,
+        (Arg(("url",), "the server address, for example http://127.0.0.1:11434"),),
+        example="arhugula provider ollama-host http://127.0.0.1:11434",
+        detail="The server must answer at the address, or nothing changes.",
+    ),
+    Verb(
         ("provider", "key", "set"),
-        "Store a hosted API provider's key in the OS keyring.",
+        "Store a hosted API provider's key in the macOS keychain.",
         "runtime",
         _provider_key_set,
         (Arg(("name",), "the hosted API provider", {"choices": SDK_NAMES}),),
@@ -694,7 +725,7 @@ VERBS: tuple[Verb, ...] = (
     ),
     Verb(
         ("provider", "key", "delete"),
-        "Remove a hosted API provider's key from the OS keyring.",
+        "Remove a hosted API provider's key from the macOS keychain.",
         "runtime",
         _provider_key_delete,
         (Arg(("name",), "the hosted API provider", {"choices": SDK_NAMES}),),
@@ -829,7 +860,7 @@ VERBS: tuple[Verb, ...] = (
         "kit",
         _config_show,
         (
-            SCOPE_ARG,
+            CONFIG_SHOW_PROJECT,
             Arg(("--overlay",), "print only the stored settings, as JSON", {"action": "store_true"}),
         ),
         example="arhugula config show",

@@ -24,14 +24,14 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from arhugula_kit import dependencies, deploy, detect, preflight, proc, questions, render, runtime, spec
+from arhugula_kit import audit_keys, dependencies, deploy, detect, preflight, proc, questions, render, runtime, spec
 from arhugula_kit.detect import Machine
 from arhugula_kit.errors import Exit, KitError
 from arhugula_kit.layout import KIT_ROOT, Home
 from arhugula_kit.preflight import Level, Stage, Subject
 from arhugula_kit.spec import Project, Spec
 
-__all__ = ["generate", "run_init", "smoke"]
+__all__ = ["first_run", "generate", "run_init", "smoke"]
 
 
 def say(text: str = "") -> None:
@@ -148,6 +148,8 @@ def _move_into_home(home: Home, answers: dict[str, Any], args: argparse.Namespac
             fix=f"run {home.kit / 'init'} instead, or choose another home",
         )
     say(f"\nThis kit clone is at {KIT_ROOT}. A deployment's kit lives at {home.kit}.")
+    say("Init copies it there and runs once more from the copy, so the checks above print again.")
+    say(f"When init has finished you can delete {KIT_ROOT}.")
     home.root.mkdir(parents=True, exist_ok=True)
     proc.require(
         proc.run(["git", "clone", "--quiet", str(KIT_ROOT), str(home.kit)], timeout=300),
@@ -164,6 +166,7 @@ def _move_into_home(home: Home, answers: dict[str, Any], args: argparse.Namespac
     pending.write_text(json.dumps(answers, indent=2) + "\n", encoding="utf-8")
     flags = ["--answers", str(pending)] + (["--reinstall"] if args.reinstall else [])
     say(f"Continuing from {home.kit / 'init'}.")
+    sys.stdout.flush()
     os.execv(str(home.kit / "init"), [str(home.kit / "init"), *flags])
 
 
@@ -182,8 +185,15 @@ def _install(home: Home, *, reinstall: bool) -> None:
 def generate(home: Home, wanted: Spec) -> deploy.Deployment:
     """Write every generated file and prepare the state root, through the runtime."""
     say("\nGenerate:")
-    for directory in (home.config, home.logs, home.run, home.backups):
+    for directory in (home.config, home.logs, home.run):
         directory.mkdir(parents=True, exist_ok=True)
+    # Backups hold copies of the private state root.
+    home.backups.mkdir(mode=0o700, exist_ok=True)
+    home.backups.chmod(0o700)
+    if render.AUDIT_SIGNING in wanted.features and not audit_keys.present(home):
+        # Signing was chosen: its keys must exist before the first run, which is a signed one.
+        for line in audit_keys.generate(home):
+            say(f"  {line}")
     deployment = deploy.apply(deploy.Deployment(home, wanted, render.fragments()), wanted)
     for target in render.targets(wanted, home):
         say(f"  wrote {target.config_file}")
@@ -199,7 +209,8 @@ def generate(home: Home, wanted: Spec) -> deploy.Deployment:
         "`kit/AGENTS.md`: it says how to operate the deployment and what never to do here.\n",
         encoding="utf-8",
     )
-    (home.root / "CLAUDE.md").write_text("@kit/AGENTS.md\n", encoding="utf-8")
+    # The kit's CLAUDE.md imports AGENTS.md and adds the few lines specific to Claude Code.
+    (home.root / "CLAUDE.md").write_text("@kit/CLAUDE.md\n", encoding="utf-8")
     link = home.bin / "arhugula"
     home.bin.mkdir(exist_ok=True)
     if link.is_symlink() or link.exists():
@@ -207,6 +218,18 @@ def generate(home: Home, wanted: Spec) -> deploy.Deployment:
     link.symlink_to(home.kit / "bin" / "arhugula")
     say(f"  command: {link}")
     return deployment
+
+
+def first_run(wanted: Spec, project: str = "") -> str:
+    """A run command that works on this deployment without spending anything it need not.
+
+    Ollama's example when Ollama is enabled (a local model, no account); otherwise the
+    one-step example on the default provider.
+    """
+    scope = f" --project {project}" if project else ""
+    if "ollama" in wanted.providers:
+        return f"run ollama-first.toml{scope} --provider ollama"
+    return f"run minimal.toml{scope}"
 
 
 def _smoke_run(home: Home, label: str, manifest: Path, config: Path, cwd: Path, extra: list[str]) -> None:
@@ -222,7 +245,7 @@ def _smoke_run(home: Home, label: str, manifest: Path, config: Path, cwd: Path, 
         raise KitError(
             Exit.WORKFLOW,
             f"the smoke run `{label}` did not complete:\n{outcome.last_lines(8)}",
-            fix="arhugula doctor",
+            fix=f"{home.bin / 'arhugula'} doctor",
         )
 
 
@@ -257,6 +280,12 @@ def run_init(args: argparse.Namespace) -> int:
     if args.smoke:
         smoke(deploy.open_deployment(kit_home))
         return Exit.OK
+
+    if args.reinstall and Path(sys.prefix).resolve() == kit_home.env.resolve():
+        # `arhugula init --reinstall` runs inside the environment it is about to replace.
+        # The kit's own `init` runs under uv instead, so hand over to it.
+        program = str(kit_home.kit / "init")
+        os.execv(program, [program, *sys.argv[sys.argv.index("init") + 1:]])
 
     def survey() -> Machine:
         return detect.survey(
@@ -294,9 +323,12 @@ def run_init(args: argparse.Namespace) -> int:
     # A relocated deployment finds itself by where its kit now sits; the stored home is stale.
     answers = {**existing, "home": str(kit_home.root)} if keep else _answers(machine, args, existing)
     # The one checkpoint for the answers, before anything is checked, installed or written.
-    wanted = _spec_of(answers)
+    try:
+        wanted = _spec_of(answers)
+    except KitError as refused:
+        raise KitError(refused.exit_code, f"the answers are not usable: {refused.message}", fix=refused.fix) from refused
     home = Home(Path(wanted.home))
-    subject = Subject(machine, answers, home)
+    subject = Subject(machine, answers, home, initializing=True)
 
     _preflight(Stage.MACHINE, subject, offer=asking)
     _move_into_home(home, answers, args)
@@ -319,6 +351,8 @@ def run_init(args: argparse.Namespace) -> int:
     say("\nThe deployment is ready.")
     say(f"  home:    {home.root}")
     say(f"  command: {home.bin / 'arhugula'}")
-    say(f'  add it to your shell:  export PATH="{home.bin}:$PATH"')
-    say("  next:    arhugula project add <path-to-a-repository>")
+    say(f'  use it in this terminal:      export PATH="{home.bin}:$PATH"')
+    say(f"""  keep it for new terminals:    echo 'export PATH="{home.bin}:$PATH"' >> ~/.zshrc""")
+    say(f"  run a workflow:               arhugula {first_run(deployment.spec)}")
+    say("  attach your own repository:   arhugula project add <path-to-a-repository>")
     return Exit.OK

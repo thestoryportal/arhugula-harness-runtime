@@ -69,7 +69,11 @@ NO_COLLECTOR = "http://127.0.0.1:9"  # the discard port: nothing listens there
 def _scratch_config(deployment: Deployment, scratch: Path, name: str, spec: Spec) -> Path:
     """Render a config for one refused run, with its ledger, spans and traces kept apart."""
     home = deployment.home
-    target = replace(render.targets(spec, home)[0], state=home.state / SELF_TEST_STATE)
+    # Its own tenant as well as its own ledger: a pause journal is keyed by tenant and
+    # workflow, so these runs cannot supersede a workflow the operator has on hold.
+    target = replace(
+        render.targets(spec, home)[0], state=home.state / SELF_TEST_STATE, tenant_id=SELF_TEST_STATE
+    )
     apart = overlay.set_value(spec, "", ("runtime", "collector", "span_store_path"), str(scratch / "spans.sqlite"))
     apart = overlay.set_value(apart, "", ("runtime", "otel", "otlp_endpoint"), NO_COLLECTOR)
     document = render.render_config(apart, home, target, deployment.fragments)

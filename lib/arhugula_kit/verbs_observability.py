@@ -12,7 +12,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from arhugula_kit import deploy, lima, observability, runtime, vm
+from arhugula_kit import deploy, initflow, lima, observability, runtime, vm
 from arhugula_kit.common import say, table
 from arhugula_kit.deploy import Deployment
 from arhugula_kit.errors import Exit, KitError
@@ -82,15 +82,19 @@ def _vm_delete(args: argparse.Namespace) -> int:
     if deployment.spec.isolation_tier3:
         raise KitError(Exit.PRECONDITION, "isolation tier 3 runs tools in this VM",
                        fix="arhugula isolation disable")
+    if observability.is_up(deployment) and deployment.spec.observability.engine is Engine.KIT:
+        raise KitError(Exit.PRECONDITION, "the trace stack is running in this VM",
+                       fix="arhugula observability down")
     if not args.yes:
         say(f"This deletes the VM {ref.name} under {ref.lima_home}, with the traces and "
             "Grafana data stored inside it.")
         say("Nothing was deleted. Run again with --yes to delete it.")
         return Exit.OK
     found.delete()
+    say(f"Deleted the VM {ref.name}.")
     if deployment.spec.observability.engine is Engine.KIT:
         _with_engine(deployment, Observability())
-    say(f"Deleted the VM {ref.name}. The observability tier is off.")
+        say("The observability tier is off.")
     return Exit.OK
 
 
@@ -151,7 +155,7 @@ def _store(deployment: Deployment) -> Path:
         raise KitError(
             Exit.PRECONDITION,
             f"there is no span store at {store} yet; the runtime creates it on the first run",
-            fix="arhugula run examples/minimal.toml --project default",
+            fix=f"arhugula {initflow.first_run(deployment.spec)}",
         )
     return store
 
@@ -293,7 +297,12 @@ def _eval_sample(args: argparse.Namespace) -> int:
             f"a holdout set already exists at {holdout}",
             fix="review it with `arhugula eval review`, or draw a new one with --replace",
         )
-    holdout.unlink(missing_ok=True)
+    if holdout.exists():
+        # The review ledger and the assertion files belong to the set they were made for.
+        aside = directory.with_name(f"{directory.name}.replaced-{time.strftime('%Y%m%dT%H%M%S')}")
+        directory.rename(aside)
+        directory.mkdir()
+        say(f"the earlier set, its reviews and its assertion files were moved to {aside}")
     return _inspect(
         deployment,
         ["--collector-path", _store(deployment), "--holdout-sample", str(args.count),
@@ -413,6 +422,11 @@ def _drift_show(args: argparse.Namespace) -> int:
             "<primitive> <value>")
         say(f"Primitives: {', '.join(DRIFT_PRIMITIVES)}")
         return Exit.OK
+    if args.judge_value is not None and not args.primitive:
+        raise KitError(
+            Exit.USAGE,
+            "--judge-value is your measurement of one primitive; name the primitive it belongs to",
+        )
     drifted = False
     for primitive in chosen:
         if primitive not in stored:
@@ -464,14 +478,14 @@ _PRIMITIVE = Arg(
 VERBS: tuple[Verb, ...] = (
     Verb(
         ("observability", "vm", "create"),
-        "Create the deployment's own Lima VM with Docker Engine, Compose and gVisor.",
+        "Create the deployment's own Lima virtual machine with Docker Engine, Compose and gVisor.",
         "kit",
         _vm_create,
         example="arhugula observability vm create",
         detail=(
-            "The VM lives under `<home>/lima`, is built for this machine's CPU, and sees only "
-            "the Compose project and the run logs, read-only. It is the deployment's only "
-            "Docker engine; Docker Desktop is not used. Allow 5 to 10 minutes."
+            "The virtual machine lives under `<home>/lima` and is built for this machine's "
+            "processor. It sees only the Compose project and the run logs, read-only. It is "
+            "the deployment's only Docker engine; Docker Desktop is not used. Allow 5 to 10 minutes."
         ),
     ),
     Verb(
@@ -481,7 +495,11 @@ VERBS: tuple[Verb, ...] = (
         _vm_use,
         args=(Arg(("instance",), "the instance, as `<lima-home>::<instance>`"),),
         example="arhugula observability vm use ~/.lima::default",
-        detail="The instance must be built for this machine's CPU and must see the deployment home.",
+        detail=(
+            "The instance must be built for this machine's processor. It must also show "
+            "`<home>/observability` and `<home>/logs` at the same paths as on the host; "
+            "`arhugula observability up` checks that and refuses when it cannot see them."
+        ),
     ),
     Verb(
         ("observability", "vm", "status"),
@@ -506,9 +524,9 @@ VERBS: tuple[Verb, ...] = (
         example="arhugula observability up",
         detail=(
             "Renders the Compose project from the pinned upstream files and the kit's "
-            "dashboards and alert rules, starts the VM (creating the kit's VM if it does "
-            "not exist), starts the stack, and waits until Grafana, Tempo and the trace "
-            "endpoint answer on loopback."
+            "dashboards and alert rules. Starts the virtual machine, creating the kit's own "
+            "if it does not exist. Starts the stack and waits until Grafana, Tempo and the "
+            "trace endpoint answer on loopback."
         ),
     ),
     Verb(
@@ -599,7 +617,7 @@ VERBS: tuple[Verb, ...] = (
             _PRIMITIVE,
             Arg(("--count",), "how many traces to draw", {"type": int, "default": 10, "metavar": "N"}),
             Arg(("--seed",), "the sampling seed; the same seed draws the same set", {"type": int, "default": 0}),
-            Arg(("--replace",), "replace an existing holdout set", {"action": "store_true"}),
+            Arg(("--replace",), "draw a new set; the earlier set, its reviews and its assertion files are moved aside", {"action": "store_true"}),
         ),
         example="arhugula eval sample --count 5",
     ),

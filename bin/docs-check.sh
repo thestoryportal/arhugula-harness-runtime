@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Check the documentation pages. Exits non-zero on any finding.
 #
-#   bin/docs-check.sh [page ...]      default: README.md, CLAUDE.md, AGENTS.md, CHANGELOG.md, docs/
+#   bin/docs-check.sh [page ...]      default: README.md, CHANGELOG.md, docs/
 #
 # Two checks:
 #   1. No page names an absolute path of anyone's machine.
@@ -14,7 +14,10 @@ KIT=${0:A:h:h}
 cd $KIT || exit 2
 
 pages=("$@")
-(( $# )) || pages=(README.md CLAUDE.md AGENTS.md CHANGELOG.md docs)
+# AGENTS.md and CLAUDE.md are instructions for agent CLIs, written to a different craft
+# (long paragraphs that restate a boundary are deliberate there), so they get the path
+# check and not the plain-language audit.
+(( $# )) || pages=(README.md CHANGELOG.md docs)
 failed=0
 
 for page in $pages; do
@@ -22,7 +25,7 @@ for page in $pages; do
 done
 
 print "docs-check: machine paths"
-if grep -rnE '/Users/[A-Za-z]|/Volumes/[A-Za-z]|/home/[a-z]' $pages; then
+if grep -rnE '/Users/[A-Za-z]|/Volumes/[A-Za-z]|/home/[a-z]' $pages AGENTS.md CLAUDE.md; then
   print -u2 "docs-check: a page names an absolute machine path; use <home> and <project>"
   failed=1
 fi
@@ -40,7 +43,12 @@ if [[ -z $audit || ! -f $audit ]] || ! command -v bun >/dev/null; then
   exit $(( failed ? 1 : 4 ))
 fi
 for page in $pages; do
-  bun $audit $page --project-dir $KIT || failed=1
+  # The audit prints its findings and a count; its exit status does not carry the count.
+  report=$(bun $audit $page --project-dir $KIT) || { print -u2 "docs-check: the audit failed on $page"; exit 2 }
+  if ! print -r -- $report | grep -q '^Finding count: 0\.'; then
+    print -r -- $report
+    failed=1
+  fi
 done
 
 (( failed )) && { print -u2 "docs-check: findings above"; exit 1 }

@@ -13,6 +13,7 @@ import traceback
 from collections.abc import Sequence
 
 from arhugula_kit.errors import Exit, KitError
+from arhugula_kit.layout import KIT_ROOT
 from arhugula_kit.verbs import GROUPS, Verb
 
 __all__ = ["all_verbs", "build_parser", "main"]
@@ -54,6 +55,11 @@ def build_parser(verbs: Sequence[Verb]) -> argparse.ArgumentParser:
         epilog="Every verb takes --help. The full reference is docs/reference/cli.md.",
     )
     parser.add_argument(
+        "--version",
+        action="store_true",
+        help="print the kit's version and the upstream commit it pins, and exit",
+    )
+    parser.add_argument(
         "--help-markdown",
         action="store_true",
         help="print the complete verb reference as Markdown and exit",
@@ -90,6 +96,10 @@ def main(argv: Sequence[str]) -> int:
     verbs = all_verbs()
     parser = build_parser(verbs)
     args, passthrough = parser.parse_known_args(list(argv))
+    if args.version:
+        print(f"arhugula kit {(KIT_ROOT / 'VERSION').read_text(encoding='utf-8').strip()}; "
+              f"upstream pin {(KIT_ROOT / 'PIN').read_text(encoding='utf-8').strip()}")
+        return Exit.OK
     if args.help_markdown:
         from arhugula_kit import helpmd
 

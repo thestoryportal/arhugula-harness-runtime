@@ -6,7 +6,7 @@ import argparse
 from dataclasses import replace
 from pathlib import Path
 
-from arhugula_kit import deploy, preflight, spec
+from arhugula_kit import initflow, deploy, preflight, spec
 from arhugula_kit.common import say, table
 from arhugula_kit.errors import Exit, KitError
 from arhugula_kit.preflight import Level
@@ -67,7 +67,7 @@ def _add(args: argparse.Namespace) -> int:
         for line in agentctx.install(deployment, name):
             say(f"  {line}")
     say(f"  current project: {deployment.spec.current_project}")
-    say(f"next: arhugula run ollama-first.toml --project {name}")
+    say(f"next: arhugula {initflow.first_run(deployment.spec, name)}")
     return Exit.OK
 
 

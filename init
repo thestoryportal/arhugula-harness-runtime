@@ -14,12 +14,11 @@
 set -u
 KIT=${0:A:h}
 
-ask() {  # ask "<question>": true only when a person at this terminal types y
+ask() {  # ask "<question>": true only when a person at this terminal answers y or yes
   [[ -t 0 ]] || return 1
-  read -q "?    $1 [y/N]: "
-  local answer=$?
-  print
-  return $answer
+  local reply
+  read -r "reply?    $1 [y/N]: " || return 1
+  [[ ${reply:l} == (y|yes) ]]
 }
 
 if ! command -v uv >/dev/null; then

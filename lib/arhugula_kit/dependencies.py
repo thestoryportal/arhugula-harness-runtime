@@ -49,6 +49,7 @@ VM_FREE_GIB = 12.0
 class Need(StrEnum):
     REQUIRED = "required"  # init cannot continue without it
     CHOICE = "optional"  # needed only by something the operator may choose
+    ADVISORY = "checked again later"  # shown here; preflight repeats it once the home is known
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,7 @@ class Dependency:
     check_by_hand: str  # the terminal command that shows whether it is in place
     check: Callable[[Machine, Home], State]
     setup: tuple[Setup, ...] = ()
+    in_order: bool = False  # the setup commands are steps to run in order, not alternatives
     then: str = ""  # what to do after the setup command, in words (sign in, start it)
 
 
@@ -241,7 +243,7 @@ DEPENDENCIES: tuple[Dependency, ...] = (
         purpose="A package installer. It is only the suggested way to install the tools "
         "below; each one also has its own installer.",
         need=Need.CHOICE,
-        needed_for="the `brew install` commands in this table",
+        needed_for="the `brew install` commands in this list",
         check_by_hand="brew --version",
         check=_homebrew,
         setup=(
@@ -274,12 +276,13 @@ DEPENDENCIES: tuple[Dependency, ...] = (
     Dependency(
         id="disk",
         title=f"{MIN_FREE_GIB:.0f} GiB of free disk space",
-        purpose=f"The install takes about {MIN_FREE_GIB:.0f} GiB. With the kit's virtual "
-        f"machine and its container images, allow {VM_FREE_GIB:.0f} GiB.",
+        purpose=f"Init wants {MIN_FREE_GIB:.0f} GiB free before it installs, and "
+        f"{VM_FREE_GIB:.0f} GiB when it also creates the virtual machine. The install itself "
+        "takes about half a gigabyte; the virtual machine with its container images takes about 5.",
         # Not blocking here: the home is chosen at question 1, and preflight P4 checks the
         # volume that will really hold it.
-        need=Need.CHOICE,
-        needed_for="every deployment; checked again for the home you choose (preflight P4)",
+        need=Need.ADVISORY,
+        needed_for="every deployment; preflight check P4 checks the home you choose",
         check_by_hand="df -h ~",
         check=_disk,
     ),
@@ -293,6 +296,7 @@ DEPENDENCIES: tuple[Dependency, ...] = (
         check_by_hand="curl -s http://127.0.0.1:11434/api/tags",
         check=_ollama,
         setup=(Setup("brew install ollama", offered=True), Setup("brew services start ollama", offered=True)),
+        in_order=True,
         then="Without Homebrew, install the app from https://ollama.com/download and open it; "
         "`ollama serve` starts the server in a terminal.",
     ),
@@ -311,10 +315,11 @@ DEPENDENCIES: tuple[Dependency, ...] = (
         id="provider",
         title="At least one usable provider",
         purpose="A workflow step is a call to a model. One provider above must be installed "
-        "and signed in; Ollama is the one that needs no account.",
+        "and signed in. Ollama is the one that needs no account: set up the Ollama row and "
+        "its model row, and this one is met.",
         need=Need.REQUIRED,
         needed_for="every deployment",
-        check_by_hand="see the provider rows above",
+        check_by_hand="",
         check=_any_provider,
     ),
     Dependency(
@@ -332,9 +337,9 @@ DEPENDENCIES: tuple[Dependency, ...] = (
     Dependency(
         id="vm",
         title="The kit's virtual machine: Docker Engine, Docker Compose and gVisor",
-        purpose="Inside the Lima VM: Docker Engine and Compose run the trace stack "
-        "(collector, Tempo, Grafana); gVisor sandboxes tool calls at isolation tier 3. "
-        "The kit installs all three when it creates the VM.",
+        purpose="Inside the Lima virtual machine, Docker Engine and Compose run the trace stack "
+        "(collector, Tempo, Grafana). gVisor sandboxes tool calls at isolation tier 3. "
+        "The kit installs all three when it creates the virtual machine.",
         need=Need.CHOICE,
         needed_for="the observability tier and isolation tier 3",
         check_by_hand="arhugula observability vm status",
@@ -354,7 +359,7 @@ def _label(index: int) -> str:
 
 
 def _print_row(index: int, dependency: Dependency, state: State, out: Callable[[str], None]) -> None:
-    word = "ok" if state.ready else ("MISSING" if dependency.need is Need.REQUIRED else "absent")
+    word = "ok" if state.ready else {Need.REQUIRED: "MISSING", Need.CHOICE: "absent", Need.ADVISORY: "low"}[dependency.need]
     out(f"  {word:7}  {_label(index):3} {dependency.title}: {state.detail}")
 
 
@@ -362,11 +367,13 @@ def _print_guide(dependency: Dependency, out: Callable[[str], None]) -> None:
     """The guided message for a dependency that is not in place."""
     out(f"           what it is for: {dependency.purpose}")
     out(f"           needed for:     {dependency.needed_for}")
+    joiner = "         then: " if dependency.in_order else "           or: "
     for position, setup in enumerate(dependency.setup):
-        out(f"           {'set it up:     ' if position == 0 else '           or: '} {setup.command}")
+        out(f"           {'set it up:     ' if position == 0 else joiner} {setup.command}")
     if dependency.then:
-        out(f"           then:           {dependency.then}")
-    out(f"           check by hand:  {dependency.check_by_hand}")
+        out(f"           note:           {dependency.then}")
+    if dependency.check_by_hand:
+        out(f"           check by hand:  {dependency.check_by_hand}")
 
 
 def run_stage(
@@ -442,19 +449,20 @@ def markdown() -> str:
     lines: list[str] = []
     for index, dependency in enumerate(DEPENDENCIES, start=1):
         lines += [
-            f"### {_label(index)}. {dependency.title}",
+            f"### {_label(index)}: {dependency.title}",
             "",
             f"{dependency.purpose}",
             "",
             f"- Needed for: {dependency.needed_for} ({dependency.need.value}).",
-            f"- Check: `{dependency.check_by_hand}`",
         ]
+        if dependency.check_by_hand:
+            lines.append(f"- Check: `{dependency.check_by_hand}`")
         if dependency.setup:
             lines += ["- Set it up:", "", "  ```sh"]
             lines += [f"  {setup.command}" for setup in dependency.setup[:1]]
             lines += ["  ```"]
             for setup in dependency.setup[1:]:
-                lines += ["", "  Or:", "", "  ```sh", f"  {setup.command}", "  ```"]
+                lines += ["", "  Then:" if dependency.in_order else "  Or:", "", "  ```sh", f"  {setup.command}", "  ```"]
         if dependency.then:
             lines += ["", f"  {dependency.then}"]
         lines.append("")

@@ -226,6 +226,19 @@ def validator_inspect(args: dict[str, Any]) -> Any:
     return {"class": f"{cls.__module__}:{cls.__qualname__}", "doc": (cls.__doc__ or "").strip()}
 
 
+def hook_inspect(args: dict[str, Any]) -> Any:
+    """Import and build a skill-activation hook, as a run will. No workflow is started."""
+    import importlib
+
+    sys.path[:0] = list(args.get("python_paths", ()))
+    module_name, _, class_name = args["hook"].partition(":")
+    try:
+        instance = getattr(importlib.import_module(module_name), class_name)()
+    except Exception as exc:
+        raise Refused(type(exc).__name__, str(exc)) from exc
+    return {"class": f"{type(instance).__module__}:{type(instance).__qualname__}"}
+
+
 def mcp_tools(args: dict[str, Any]) -> Any:
     """Connect to an MCP server over streamable HTTP and list the tools it offers."""
     import asyncio
@@ -279,15 +292,17 @@ def drift_check(args: dict[str, Any]) -> Any:
     threshold = AlignmentFloorThreshold(
         primitive=primitive, threshold_value=float(args["threshold"]), observation_window=window
     )
-    current = args.get("judge_value")
-    if current is None:
-        conn = sqlite3.connect(f"file:{args['store']}?mode=ro", uri=True)
-        try:
-            current = algorithm.compute_current_value(conn, primitive, window, now_ns=time.time_ns())
-        except algorithm.NotSpanDerivableError as exc:
+    # Spans decide when they can. The operator's own measurement is used only for a
+    # primitive spans cannot give, exactly as upstream's drift check does.
+    conn = sqlite3.connect(f"file:{args['store']}?mode=ro", uri=True)
+    try:
+        current = algorithm.compute_current_value(conn, primitive, window, now_ns=time.time_ns())
+    except algorithm.NotSpanDerivableError as exc:
+        current = args.get("judge_value")
+        if current is None:
             raise Refused("needs-judge-value", str(exc)) from exc
-        finally:
-            conn.close()
+    finally:
+        conn.close()
     if current is None:
         return {"current_value": None, "drift": False, "reason": "no data in the window"}
     return {
@@ -323,6 +338,7 @@ OPERATIONS: dict[str, Operation] = {
     "keyring-set": keyring_set,
     "keyring-delete": keyring_delete,
     "validator-inspect": validator_inspect,
+    "hook-inspect": hook_inspect,
     "mcp-tools": mcp_tools,
     "drift-check": drift_check,
     "load-config": load_config,

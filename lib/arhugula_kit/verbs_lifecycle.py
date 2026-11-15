@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from arhugula_kit import dependencies, deploy, detect, initflow, lima, preflight, vm
@@ -31,7 +32,7 @@ def _doctor(args: argparse.Namespace) -> int:
     )
     print("\nDependencies:")
     for index, (dependency, state) in enumerate(dependencies.report(machine, deployment.home), start=1):
-        word = "ok" if state.ready else ("MISSING" if dependency.need is dependencies.Need.REQUIRED else "absent")
+        word = "ok" if state.ready else ("MISSING" if dependency.need is dependencies.Need.REQUIRED else "absent")  # noqa: E501
         print(f"  {word:7}  D{index:<2} {dependency.title}: {state.detail}")
         if not state.ready:
             for setup in dependency.setup:
@@ -51,6 +52,7 @@ def _doctor(args: argparse.Namespace) -> int:
 def _reverify_under_uv(home: Home, *flags: str) -> int:
     """Hand over to `init`, which runs outside the environment it is about to replace."""
     program = str(home.kit / "init")
+    sys.stdout.flush()  # what was printed so far must not be lost when this process is replaced
     os.execv(program, [program, "--reverify", *flags])
 
 
@@ -131,13 +133,27 @@ def _upgrade(args: argparse.Namespace) -> int:
     deployment = deploy.open_deployment()
     home = deployment.home
     pin_file = home.kit / "PIN"
-    current = pin_file.read_text(encoding="utf-8").strip()
+    # What is installed, not what the PIN file says: after a `git pull` of the kit the
+    # file already names the new commit while the environment is still the earlier one.
+    installed = home.env / ".arhugula-pin"
+    current = (installed if installed.is_file() else pin_file).read_text(encoding="utf-8").strip()
     rollback = home.root / "env.rollback"
     installer = str(home.kit / "bin" / "install.sh")
     if args.rollback:
-        if not rollback.is_dir():
-            raise KitError(Exit.PRECONDITION, f"there is no earlier environment at {rollback}")
-        previous = (rollback / ".arhugula-pin").read_text(encoding="utf-8").strip()
+        record = rollback / ".arhugula-pin"
+        if not record.is_file():
+            raise KitError(
+                Exit.PRECONDITION,
+                f"there is no complete earlier environment at {rollback} to return to",
+                fix="arhugula upgrade --pin <sha> installs any commit again",
+            )
+        if not home.env.is_dir():
+            raise KitError(
+                Exit.PRECONDITION,
+                f"there is no environment at {home.env} to replace",
+                fix=f"run {home.kit / 'init'} --reverify --reinstall",
+            )
+        previous = record.read_text(encoding="utf-8").strip()
         _refuse_while_daemon_runs(deployment, "roll back")
         aside = home.root / "env.replaced"
         shutil.rmtree(aside, ignore_errors=True)
@@ -147,9 +163,10 @@ def _upgrade(args: argparse.Namespace) -> int:
         pin_file.write_text(previous + "\n", encoding="utf-8")
         print(f"Rolled back to {previous}. The environment it replaced is kept at {rollback}. Re-verifying.")
         return _reverify_under_uv(home)
-    wanted = (args.pin or current).strip()
+    wanted = (args.pin or pin_file.read_text(encoding="utf-8")).strip()
     if len(wanted) != 40 or any(c not in "0123456789abcdef" for c in wanted):
-        raise KitError(Exit.USAGE, "--pin takes a full 40-character commit id of upstream `main`")
+        source = "--pin" if args.pin else f"the file {pin_file}"
+        raise KitError(Exit.USAGE, f"{source} must give a full 40-character commit id of the upstream repository")
     _refuse_while_daemon_runs(deployment, "upgrade")
     if wanted == current and not args.reinstall:
         print(f"The deployment is already at {current}. Pass --reinstall to rebuild it.")
@@ -279,9 +296,9 @@ VERBS: tuple[Verb, ...] = (
         args=(Arg(("new_home",), "the new home directory; it must not exist or must be empty"),),
         example="arhugula relocate ~/work/arhugula",
         detail=(
-            "Moves the tree, rebuilds the environment (its scripts carry their own path), "
-            "regenerates every config and the installation-state document, and has the "
-            "runtime verify the state root at its new place."
+            "Moves the tree and rebuilds the environment, because its scripts carry their own "
+            "path. Then it regenerates every config and the installation-state document, and "
+            "has the runtime verify the state root at its new place."
         ),
     ),
     Verb(

@@ -98,6 +98,21 @@ def main(argv: list[str]) -> int:
         print(f"{len(blocks)} marked block(s) in {len(pages)} page(s)")
         return 0
 
+    if not args.pages:
+        # A full run attaches the project and creates files in it, so it runs once.
+        listed = subprocess.run(
+            [str(home / "bin" / "arhugula"), "project", "list"], capture_output=True, text=True
+        )
+        if any(line.split()[:2][-1:] == [args.project] or line.split()[:1] == [args.project]
+               for line in listed.stdout.splitlines()[1:]):
+            print(
+                f"witness: the project `{args.project}` is already attached, so a full run was "
+                "already made on this deployment. The witness is for a fresh one. To repeat it: "
+                f"`arhugula project remove {args.project}`, then give a new empty repository as "
+                "--project-path.",
+                file=sys.stderr,
+            )
+            return 2
     if not blocks:
         print("witness: no page marks a block with <!-- witness -->, so nothing was run", file=sys.stderr)
         return 2
