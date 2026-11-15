@@ -1,10 +1,10 @@
 {
-  "_about": "An EXAMPLE answers file for `init --answers`. Every path here is a placeholder: replace /absolute/path/to/... with real paths on your machine. `init --questions-json` prints the questions with the defaults computed for your machine.",
+  "_about": "An EXAMPLE answers file for `init --answers`. Every path here is a placeholder: replace /absolute/path/to/... with real paths on your machine. `init --questions-json` prints the questions with the defaults computed for your machine. `models` names, per selected provider, the models it makes available; the first is its default, and `<model>@<level>` adds a thinking level where the provider has levels (Claude Code, Codex). A model a provider's own tool does not list for your sign-in is refused.",
   "home": "/absolute/path/to/arhugula",
   "providers": ["claude_code", "ollama"],
   "primary": "claude_code",
   "fallback": "ollama",
-  "ollama_model": "llama3.2:3b",
+  "models": {"claude_code": ["sonnet", "opus@high"], "ollama": ["llama3.2:3b"]},
   "ollama_host": "http://127.0.0.1:11434",
   "project": "",
   "workloads": ["pipeline-automation", "software-engineering", "research", "content-creation"],

@@ -10,6 +10,7 @@ import os
 import platform
 import shutil
 import socket
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -115,12 +116,17 @@ def _tool_output(*argv: str) -> str:
 
 
 def survey(
-    home: Home, *, ollama_host: str = OLLAMA_DEFAULT_HOST, lima_home: str | None = None
+    home: Home,
+    *,
+    ollama_host: str = OLLAMA_DEFAULT_HOST,
+    lima_home: str | None = None,
+    added: Sequence[providers.Provider] = (),
 ) -> Machine:
     """Probe the machine. Reads only: nothing is started, written or signed in.
 
     `home` is where the deployment is or would be; it locates the kit's own VM.
     `lima_home` is the Lima home of an instance the operator chose earlier, if any.
+    `added` are the providers the operator added to this deployment, checked like the rest.
     """
     host = os.environ.get("OLLAMA_HOST_URL", ollama_host)
     limactl = proc.which("limactl")
@@ -145,7 +151,7 @@ def survey(
         kit_vm=kit_vm,
         kit_engine=lima.probe_engine(kit_vm) if kit_vm is not None and kit_vm.running else None,
         provider_states=tuple(
-            providers.check(provider, ollama_host=host) for provider in providers.CATALOGUE
+            providers.check(provider, ollama_host=host) for provider in (*providers.CATALOGUE, *added)
         ),
         ollama_host=host,
         ollama_models=providers.ollama_models(host),

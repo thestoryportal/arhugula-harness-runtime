@@ -104,7 +104,7 @@ DASHBOARDS.append(dict(file="genai.json", uid="arhugula-genai", title="Arhugula 
          "**Answers:** how many LLM calls ran, how fast, on which provider and model, how many tokens they used, and which calls failed.\n\n"
          "**Data comes from:** every workflow step that dispatches to a model. Each dispatch writes one `chat <model>` span. "
          "Runs on any provider produce data; token counts appear only for API-metered providers and Ollama, "
-         "while subscription CLI routes (`claude_code`, `codex`, `gemini`, `antigravity`) report tokens as `external_cli.usage.*` evidence instead.\n\n" + RANGE_NOTE, h=6),
+         "while subscription CLI routes (`claude_code`, `codex`, `antigravity`) report tokens as `external_cli.usage.*` evidence instead.\n\n" + RANGE_NOTE, h=6),
     stat("LLM calls", "How many LLM calls ran in the selected time range?", q(CHAT, 'count_over_time()')),
     stat("Failed LLM calls", "How many LLM calls ended with an error status?", q(CHAT + ' && status = error', 'count_over_time()'), bad=True),
     stat("Input tokens", "How many input tokens did providers report?", q(CHAT + ' && span.gen_ai.usage.input_tokens != nil', 'sum_over_time(span.gen_ai.usage.input_tokens)')),
@@ -241,7 +241,7 @@ DASHBOARDS.append(dict(file="cost.json", uid="arhugula-cost", title="Arhugula ·
          "The harness writes cost as text in `cost.attributed_decimal`; the kit's collector copies it into the number `cost.attributed_number`, which these panels sum. "
          "Rates come from the harness rate table, whose defaults are placeholders for the operator to override.\n\n" + RANGE_NOTE, h=6, w=12),
     text("Subscription CLI routes show no cost",
-         "**Subscription CLI routes are never priced, by design.** Calls through `claude_code`, `codex`, `gemini` and `antigravity` have no rate-table row: "
+         "**Subscription CLI routes are never priced, by design.** Calls through `claude_code`, `codex` and `antigravity` have no rate-table row: "
          "their usage is kept as evidence (`external_cli.usage.*`) and no cost attribute is written. They therefore add nothing to any panel here. "
          "This is expected and does not mean the calls were free of charge under your subscription.\n\n"
          "Local Ollama calls are priced at a rate of zero, so they appear with a cost of 0.", h=6, w=12,

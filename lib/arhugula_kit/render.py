@@ -19,7 +19,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from arhugula_kit import providers
+from arhugula_kit import modelwrap, proc, providers
 from arhugula_kit.errors import Exit, KitError
 from arhugula_kit.layout import KIT_ROOT, STACK_PORTS, Home
 from arhugula_kit.spec import Spec
@@ -34,6 +34,7 @@ __all__ = [
     "render_config",
     "with_new_cutover_ledgers",
     "targets",
+    "wrappers",
     "write_installation_state",
 ]
 
@@ -159,23 +160,72 @@ def _binding(provider: str, spec: Spec) -> dict[str, str]:
     return {
         "provider": provider,
         "model": spec.model_of(provider),
-        "family": providers.by_name(provider).family,
+        "family": spec.provider(provider).family,
     }
 
 
 def _command_of(provider: providers.Provider, spec: Spec) -> str:
-    """The absolute path of a CLI provider's executable: the operator's override, else found."""
-    override = spec.commands.get(provider.name)
+    """The absolute path of a CLI provider's executable: the operator's override, else found.
+
+    A provider the operator added is its own absolute command, given at `provider add`. An
+    override written as a bare name is looked up on PATH here, as the runtime did before the
+    wrapper: the wrapper runs in the runtime's working directory, where a bare name finds nothing.
+    """
+    override = provider.command if provider.is_custom else spec.commands.get(provider.name, "")
+    repoint = f"arhugula provider enable {provider.name} --command <absolute-path-to-{provider.command}>"
     if override:
-        return override
-    found = providers.resolve_command(provider)
-    if found is None:
+        found = Path(override) if Path(override).is_absolute() else proc.which(override)
+        if found is None:
+            raise KitError(
+                Exit.PRECONDITION, f"the command `{override}` set for {provider.name} is not on PATH", fix=repoint
+            )
+    else:
+        found = providers.resolve_command(provider)
+        if found is None:
+            raise KitError(
+                Exit.PRECONDITION,
+                f"the {provider.title} is selected but `{provider.command}` is not installed",
+                fix=f"install it, or run `arhugula provider disable {provider.name}`",
+            )
+    # The kit's own wrapper given as the real executable would exec itself until the step times out.
+    if modelwrap.is_generated(found):
         raise KitError(
             Exit.PRECONDITION,
-            f"the {provider.title} is selected but `{provider.command}` is not installed",
-            fix=f"install it, or run `arhugula provider disable {provider.name}`",
+            f"the command for {provider.name} is {found}, the kit's own wrapper, not the provider's CLI",
+            fix=repoint,
         )
     return str(found)
+
+
+def _wrapped(spec: Spec) -> tuple[providers.Provider, ...]:
+    """The selected providers whose CLI the runtime reaches through the kit's level wrapper."""
+    return tuple(p for p in map(spec.provider, spec.providers) if p.level_args)
+
+
+def wrappers(spec: Spec, home: Home) -> dict[Path, str]:
+    """Every level wrapper the deployment needs, by path, with the real executable written in."""
+    return {modelwrap.path(home, p): modelwrap.script(p, _command_of(p, spec)) for p in _wrapped(spec)}
+
+
+def _cli_entry(provider: providers.Provider, spec: Spec, home: Home, required: set[str]) -> dict[str, Any]:
+    """One `external_cli_providers` entry: a built-in CLI kind, or the operator's own command."""
+    wrapped = provider in _wrapped(spec)
+    entry: dict[str, Any] = {
+        "provider": provider.name,
+        "kind": provider.cli_kind,
+        "command": str(modelwrap.path(home, provider)) if wrapped else _command_of(provider, spec),
+        "timeout_seconds": 120,
+        "auth_check": provider.runtime_auth_check,
+        "optional": provider.name not in required,
+    }
+    if provider.is_custom:
+        entry |= {
+            "args": list(provider.args),
+            "auth_args": list(provider.auth_args),
+            "response_format": provider.response_format,
+            "prompt_transport": provider.prompt_transport,
+        }
+    return {**entry, **spec.provider_settings.get(provider.name, {})}
 
 
 def _base(spec: Spec, home: Home, target: Target) -> dict[str, Any]:
@@ -183,15 +233,15 @@ def _base(spec: Spec, home: Home, target: Target) -> dict[str, Any]:
     required = {spec.primary, spec.fallback} - {""}
     ordered = [spec.primary, *([spec.fallback] if spec.fallback else [])]
     ordered += [name for name in spec.providers if name not in ordered]
-    selected = [providers.by_name(name) for name in ordered]
+    selected = [spec.provider(name) for name in ordered]
 
-    primary = providers.by_name(spec.primary)
+    primary = spec.provider(spec.primary)
     same_family: list[dict[str, str]] = []
     cross_family: list[dict[str, str]] = []
     if spec.fallback:
         bucket = (
             same_family
-            if providers.by_name(spec.fallback).family == primary.family
+            if spec.provider(spec.fallback).family == primary.family
             else cross_family
         )
         bucket.append(_binding(spec.fallback, spec))
@@ -240,15 +290,7 @@ def _base(spec: Spec, home: Home, target: Target) -> dict[str, Any]:
             ]
         },
         "external_cli_providers": [
-            {
-                "provider": provider.name,
-                "kind": provider.cli_kind,
-                "command": _command_of(provider, spec),
-                "timeout_seconds": 120,
-                "auth_check": provider.runtime_auth_check,
-                "optional": provider.name not in required,
-                **spec.provider_settings.get(provider.name, {}),
-            }
+            _cli_entry(provider, spec, home, required)
             for provider in selected
             if provider.access is providers.Access.CLI
         ],

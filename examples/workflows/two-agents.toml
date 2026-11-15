@@ -1,0 +1,50 @@
+# An example workflow whose two steps each run on their own provider, model and
+# thinking level (docs/providers.md, "Choose a model and a thinking level").
+#
+# Each entry of per_step_overrides names one step and binds it to a provider and a
+# model. A thinking level is written after the model as @<level>. Use models that
+# `arhugula provider models` shows for your sign-in, and make them available first:
+#   arhugula provider enable claude_code --model sonnet --model haiku@low
+#   arhugula provider enable codex --model <a-model-from-the-list>@medium
+# Every inference step needs a params table, even an empty one.
+version = 1
+
+[workflow]
+workflow_id = "two-agents"
+workload_class = "pipeline-automation"
+persona_tier = "solo-developer"
+engine_class = "pure-pattern-no-engine"
+topology_pattern = "single-threaded-linear"
+layer_budgets = []
+hitl_placements = []
+fallback_chain = { primary = { provider = "claude_code", model = "sonnet", family = "anthropic" }, same_family = [], cross_family = [] }
+
+[workflow.per_step_overrides.first]
+step_id = "first"
+model_binding = { provider = "claude_code", model = "haiku@low" }
+
+[workflow.per_step_overrides.second]
+step_id = "second"
+model_binding = { provider = "codex", model = "gpt-6.1-sol@medium" }
+
+[default_model_binding]
+provider = "claude_code"
+model = "sonnet"
+
+[[steps]]
+step_id = "first"
+step_kind = "inference-step"
+
+[steps.step_payload]
+messages = [{ role = "user", content = "Reply with the single word: one" }]
+tools = []
+params = {}
+
+[[steps]]
+step_id = "second"
+step_kind = "inference-step"
+
+[steps.step_payload]
+messages = [{ role = "user", content = "Reply with the single word: two" }]
+tools = []
+params = {}

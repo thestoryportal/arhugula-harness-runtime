@@ -27,7 +27,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from arhugula_kit import dependencies, detect, overlay, preflight, providers, render, runtime, toml_out
+from arhugula_kit import dependencies, detect, overlay, preflight, providers, render, runtime, spec as answers_file, toml_out
 from arhugula_kit.deploy import Deployment
 from arhugula_kit.detect import Machine
 from arhugula_kit.errors import Exit, KitError
@@ -142,7 +142,7 @@ def _runtime_cases(deployment: Deployment, scratch: Path) -> list[Case]:
             "the only provider in the chain serves a model that does not exist",
             lambda: _refused_run(
                 deployment,
-                variant("exhausted", replace(local, models={**local.models, "ollama": "no-such-model:1b"})),
+                variant("exhausted", replace(local, models={**local.models, "ollama": ("no-such-model:1b",)})),
                 manifest, "RT-FAIL-FALLBACK-EXHAUSTED"),
         ),
         Case(
@@ -196,7 +196,15 @@ def _preflight_cases(deployment: Deployment, machine: Machine, answers: Mapping[
         return Subject(machine, answers, stand_in)
 
     first_cli = next(
-        (n for n in base.selected if providers.by_name(n).access is providers.Access.CLI), "claude_code"
+        (n for n in base.selected if base.provider(n).access is providers.Access.CLI), "claude_code"
+    )
+    # A provider whose own tool lists its models, told by that list that it offers none of
+    # the one stored: what a CLI release or another account does to a stored model name.
+    listing = next(p for p in providers.CATALOGUE if p.listing is providers.Listing.SIGN_IN)
+    moved_on = tuple(
+        replace(state, status=providers.Status.READY, models=(providers.Offer("a-newer-model"),))
+        if state.provider.name == listing.name else state
+        for state in machine.provider_states
     )
     signed_out = tuple(
         replace(state, status=providers.Status.NOT_SIGNED_IN, detail="signed out (simulated)")
@@ -244,6 +252,15 @@ def _preflight_cases(deployment: Deployment, machine: Machine, answers: Mapping[
          lambda: Subject(
              replace(machine, provider_states=signed_out),
              {**answers, "providers": list(dict.fromkeys([*base.selected, first_cli])), "primary": first_cli},
+             home,
+         )),
+        ("P6", f"the default provider's sign-in no longer offers its stored model ({listing.name})",
+         "does not offer the model `a-retired-model`",
+         lambda: Subject(
+             replace(machine, provider_states=moved_on),
+             {**answers, "providers": list(dict.fromkeys([*base.selected, listing.name])),
+              "primary": listing.name,
+              "models": {**base.models, listing.name: ["a-retired-model"]}},
              home,
          )),
         ("P7", "Ollama does not answer", "no answer from Ollama",
@@ -339,11 +356,12 @@ def run(deployment: Deployment, *, say: Say = print) -> int:
     shutil.rmtree(scratch, ignore_errors=True)
     scratch.mkdir(parents=True)
     say("Surveying this machine (nothing is changed)...")
+    answers = answers_file.migrate(json.loads(home.spec_file.read_text(encoding="utf-8")))
     machine = detect.survey(
         home, ollama_host=deployment.spec.ollama_host,
         lima_home=deployment.spec.observability.lima_home or None,
+        added=answers_file.enabled_custom(answers),
     )
-    answers = json.loads(home.spec_file.read_text(encoding="utf-8"))
     failed = skipped = 0
     try:
         cases = (

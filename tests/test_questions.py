@@ -58,18 +58,19 @@ class QuestionTable(unittest.TestCase):
         self.assertIn("give an absolute path", out.getvalue())
 
     def test_codex_is_never_the_default_primary_when_another_is_selected(self):
-        got = by_id("primary").default(machine(), {"providers": ["codex", "gemini"]})
-        self.assertEqual(got, "gemini")
+        got = by_id("primary").default(machine(), {"providers": ["codex", "antigravity"]})
+        self.assertEqual(got, "antigravity")
 
 
 class Reconfigure(unittest.TestCase):
     def test_a_feature_enabled_by_a_verb_survives_being_asked_again(self):
         from arhugula_kit import initflow
 
-        preset = {"features": ["memory", "deadlines"], "models": {"ollama": "x"}}
-        got = initflow._asked(preset, {"features": ["memory", "data-flow"], "smoke": True})
+        preset = {"features": ["memory", "deadlines"], "models": {"ollama": ["x"]}}
+        asked = {"features": ["memory", "data-flow"], "smoke": True, "providers": ["ollama"], "models": {"ollama": ["y"]}}
+        got = initflow._asked(preset, asked)
         self.assertEqual(got["features"], ["memory", "data-flow", "deadlines"])
-        self.assertEqual(got["models"], {"ollama": "x"})
+        self.assertEqual(got["models"], {"ollama": ["y"]})
 
     def test_such_a_feature_does_not_break_the_prompts_default(self):
         with tempfile.TemporaryDirectory() as scratch:
@@ -142,8 +143,8 @@ class AnswersFile(unittest.TestCase):
 
     def test_a_question_that_does_not_apply_needs_no_answer(self):
         given = answers(Path("/tmp/home"), providers=["claude_code"], fallback="")
-        del given["ollama_model"]
-        self.assertIn("ollama_model", questions.complete(machine(), given))
+        del given["ollama_host"]
+        self.assertIn("ollama_host", questions.complete(machine(), given))
 
     def test_the_json_rendering_carries_every_question(self):
         described = questions.describe(machine(), {"home": "/tmp/home"})

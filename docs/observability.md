@@ -462,7 +462,7 @@ That setting changes nothing at this pin (*upstream limit*).
 - **Empty metric panels after a Tempo restart.** Metric panels stay empty until the next run writes a span. This is a limit of Tempo's metrics generator, not of the harness. Run any workflow to fill them.
 - **No finish reasons.** The harness declares the finish-reason attribute and never writes it to a span (*upstream limit*). A failed call shows only as an error status.
 - **No per-step span.** A workflow step has no span of its own (*upstream limit*).
-- **Subscription routes show no cost.** Calls through `claude_code`, `codex`, `gemini` and `antigravity` are never priced, by design (*upstream limit*). They add nothing to the Cost dashboard. That does not mean the calls were free under your subscription.
+- **Subscription routes show no cost.** Calls through `claude_code`, `codex` and `antigravity` are never priced, by design (*upstream limit*). They add nothing to the Cost dashboard. That does not mean the calls were free under your subscription.
 - **No logs backend.** The logs pipeline writes a file. Grafana does not show logs.
 - **No drift events from normal runs.** The evaluation dashboard's score and drift panels, and the drift alert rule, stay silent (*upstream limit*).
 

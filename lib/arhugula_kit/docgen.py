@@ -75,20 +75,32 @@ def _fragments() -> str:
 
 def _providers() -> str:
     lines = [
-        "| Name | Provider | Reached through | Default model | Install | Sign in |",
-        "| --- | --- | --- | --- | --- | --- |",
+        "| Name | Provider | Reached through | Models | Thinking level | Install | Sign in |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
     ]
     access = {
         providers.Access.CLI: "its command-line tool, signed in by you",
         providers.Access.OLLAMA: "the local Ollama server",
         providers.Access.SDK: "a hosted API, with a key in the macOS keychain",
     }
+    listed = {
+        providers.Listing.SIGN_IN: "the ones its own tool lists for your sign-in (`{command}`); init proposes the first",
+        providers.Listing.PULLED: "the models you have pulled (`{command}`); init proposes {examples}",
+        providers.Listing.NONE: "any name it knows, unchecked; init proposes {examples}",
+    }
     for provider in providers.CATALOGUE:
         install = "<br>".join(f"`{_cell(command)}`" for command in provider.install) or "nothing to install"
         sign_in = f"`{provider.sign_in}`" if provider.sign_in else f"`arhugula provider key set {provider.name}`"
+        examples = f"`{provider.suggested_model}`" if provider.suggested_model else "nothing"
+        models = listed[provider.listing].format(command=provider.list_command, examples=examples)
+        thinking = (
+            f"`<model>@<level>`: {', '.join(provider.levels)}" if provider.levels
+            else "`<model>@<level>`: the levels its tool lists for the model" if provider.level_args
+            else _cell(provider.level_elsewhere)
+        )
         lines.append(
             f"| `{provider.name}` | {provider.title} | {access[provider.access]} | "
-            f"`{provider.default_model}` | {install} | {sign_in} |"
+            f"{_cell(models)} | {thinking} | {install} | {sign_in} |"
         )
     return "\n".join(lines) + "\n"
 

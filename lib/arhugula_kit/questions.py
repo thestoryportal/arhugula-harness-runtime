@@ -18,6 +18,7 @@ from typing import Any, TextIO
 
 from arhugula_kit import detect, lima, providers, spec
 from arhugula_kit.detect import Machine
+from arhugula_kit.providers import Offer, Provider
 from arhugula_kit.errors import Exit, KitError
 from arhugula_kit.layout import KIT_ROOT, Home
 
@@ -67,6 +68,12 @@ class Question:
     applies: Callable[[Machine, Answers], bool] = _always
     applies_when: str = "always"
     notes: Callable[[Machine, Answers], tuple[str, ...]] = _no_notes
+    # An answer given as data (an earlier run's answer, or the answers file) in the shape
+    # this machine and the earlier answers accept; raises ValueError naming what is wrong.
+    adopt: Callable[[Any, Machine, Answers], Any] = lambda value, machine, answers: value
+    # An earlier answer as the default to show, with a note for each part of it that no
+    # longer holds; None keeps the strict `adopt` (a stale earlier answer is shown and refused).
+    keep: Callable[[Any, Machine, Answers], tuple[Any, tuple[str, ...]]] | None = None
 
 
 # --- shared parsers ---------------------------------------------------------------------
@@ -111,6 +118,19 @@ def _parse_home(text: str, machine: Machine, answers: Answers) -> str:
 # --- 2 providers ------------------------------------------------------------------------
 
 
+def _lettered(machine: Machine) -> tuple[providers.ProviderState, ...]:
+    """The providers question 2 offers: the built-in ones. An added one is kept by `provider add`."""
+    return tuple(state for state in machine.provider_states if state.provider.letter)
+
+
+def _added(machine: Machine) -> list[str]:
+    """The providers this deployment added with `provider add`: selected without a letter.
+
+    They belong to the selection the later questions (default, fallback, models) choose from.
+    """
+    return [state.provider.name for state in machine.provider_states if not state.provider.letter]
+
+
 def _provider_options(machine: Machine, answers: Answers) -> tuple[Option, ...]:
     return tuple(
         Option(
@@ -118,16 +138,33 @@ def _provider_options(machine: Machine, answers: Answers) -> tuple[Option, ...]:
             label=state.provider.title,
             note=f"{state.status.value}: {state.detail}",
         )
-        for state in machine.provider_states
+        for state in _lettered(machine)
     )
 
 
 def _default_providers(machine: Machine, answers: Answers) -> list[str]:
     return [
-        state.provider.name
-        for state in machine.provider_states
-        if state.usable and state.provider.access is not providers.Access.SDK
+        *(
+            state.provider.name
+            for state in _lettered(machine)
+            # Preselect what was checked and works. A CLI whose sign-in cannot be checked
+            # (`unverified`) stays one keystroke away, but is not chosen for the operator.
+            if state.status in (providers.Status.READY, providers.Status.PAID_ROUTE)
+            and state.provider.access is not providers.Access.SDK
+        ),
+        *_added(machine),
     ]
+
+
+def _adopt_providers(value: Any, machine: Machine, answers: Answers) -> list[str]:
+    known = [state.provider.name for state in machine.provider_states]
+    unknown = [name for name in value if name not in known]
+    if unknown:
+        raise ValueError(
+            f"unknown provider(s) {', '.join(unknown)} (known: {', '.join(known)}); a provider "
+            "of your own is added after init with `arhugula provider add`"
+        )
+    return list(value)
 
 
 def _parse_providers(text: str, machine: Machine, answers: Answers) -> list[str]:
@@ -136,7 +173,7 @@ def _parse_providers(text: str, machine: Machine, answers: Answers) -> list[str]
     unknown = [c for c in letters if c not in by_letter]
     if unknown or not letters:
         raise ValueError(f"use the letters shown, for example `co` (unknown: {''.join(unknown)})")
-    return list(dict.fromkeys(by_letter[c] for c in letters))
+    return list(dict.fromkeys([*(by_letter[c] for c in letters), *_added(machine)]))
 
 
 def _provider_notes(machine: Machine, answers: Answers) -> tuple[str, ...]:
@@ -159,8 +196,12 @@ def _default_primary(machine: Machine, answers: Answers) -> str:
     return (not_codex or list(selected))[0]
 
 
+def _provider(machine: Machine, name: str) -> Provider:
+    return machine.state_of(name).provider
+
+
 def _primary_options(machine: Machine, answers: Answers) -> tuple[Option, ...]:
-    return tuple(Option(name, providers.by_name(name).title) for name in _selected(answers))
+    return tuple(Option(name, _provider(machine, name).title) for name in _selected(answers))
 
 
 def _parse_primary(text: str, machine: Machine, answers: Answers) -> str:
@@ -176,7 +217,7 @@ def _default_fallback(machine: Machine, answers: Answers) -> str:
 
 
 def _fallback_options(machine: Machine, answers: Answers) -> tuple[Option, ...]:
-    named = tuple(Option(n, providers.by_name(n).title) for n in _fallback_candidates(answers))
+    named = tuple(Option(n, _provider(machine, n).title) for n in _fallback_candidates(answers))
     return (*named, Option("none", "no fallback"))
 
 
@@ -185,15 +226,184 @@ def _parse_fallback(text: str, machine: Machine, answers: Answers) -> str:
     return "" if word == "none" else word
 
 
-# --- 5 ollama model, 6 ollama host ------------------------------------------------------
+# --- 5 models, 6 ollama host -----------------------------------------------------------
+
+MODEL_FORMAT = (
+    "Format: <provider>=<model>,<model>; <provider>=<model>. The first model named for a "
+    "provider is its default; Enter keeps the default shown. A provider you do not name "
+    "keeps its default. Add a thinking level as <model>@<level> where the provider has levels."
+)
+
+
+def _offers(machine: Machine, name: str) -> tuple[Offer, ...]:
+    return machine.state_of(name).models
+
+
+def _default_models(machine: Machine, answers: Answers) -> dict[str, list[str]]:
+    """One model per selected provider: the first its own list offers, else the catalogue's."""
+    return {
+        name: [chosen]
+        for name in _selected(answers)
+        if (chosen := providers.first_choice(_provider(machine, name), _offers(machine, name)))
+    }
+
+
+def _grouped_levels(offered: tuple[Offer, ...]) -> str:
+    """The levels of a provider's models, one group per distinct set, so the line stays short."""
+    groups: dict[tuple[str, ...], list[str]] = {}
+    for offer in offered:
+        groups.setdefault(offer.levels, []).append(offer.id)
+    return "; ".join(
+        f"{', '.join(levels)} for {', '.join(ids) if len(groups) > 1 else 'every model'}"
+        for levels, ids in groups.items()
+        if levels
+    )
+
+
+def _offer_line(provider: Provider, offered: tuple[Offer, ...]) -> str:
+    """What a provider makes available on this machine, in words, for the prompt and the JSON."""
+    ids = ", ".join(offer.id for offer in offered)
+    match provider.listing:
+        case providers.Listing.SIGN_IN if offered:
+            listed = f"this sign-in offers: {ids}"
+        case providers.Listing.SIGN_IN:
+            listed = f"its model list could not be read (`{provider.list_command}`), so a model is accepted unchecked"
+        case providers.Listing.PULLED if offered:
+            listed = f"pulled here: {ids}; a model not pulled yet is accepted, then `ollama pull <model>`"
+        case _:
+            examples = ", ".join(provider.examples)
+            listed = "it lists no models, so any name it knows is accepted unchecked" + (
+                f", for example {examples}" if examples else ""
+            )
+    if provider.level_args:
+        levels = _grouped_levels(offered) or ", ".join(provider.levels) or "the ones its model list shows"
+        thinking = f"thinking levels, written <model>@<level>: {levels}"
+    else:
+        thinking = f"no @level: {provider.level_elsewhere}"
+    return f"{listed}. {thinking}"
+
+
+def _model_options(machine: Machine, answers: Answers) -> tuple[Option, ...]:
+    return tuple(
+        Option(name, _provider(machine, name).title, _offer_line(_provider(machine, name), _offers(machine, name)))
+        for name in _selected(answers)
+    )
+
+
+def _example_models(machine: Machine, answers: Answers) -> str:
+    """A worked answer built from this machine's own lists: two models and a level where it can."""
+    parts = []
+    for name in _selected(answers):
+        provider, offered = _provider(machine, name), _offers(machine, name)
+        names = [offer.id for offer in offered] or list(provider.examples)
+        if not names:
+            continue
+        first = providers.first_choice(provider, offered) or names[0]
+        offer = next((o for o in offered if o.id == first), None)
+        levels = (offer.levels if offer is not None else ()) or provider.levels
+        level = levels[0] if provider.level_args and levels else ""
+        chosen = [f"{first}@{level}" if level else first, *[n for n in names if n != first][:1]]
+        parts.append(f"{name}={','.join(chosen)}")
+        if len(parts) == 2:
+            break
+    return "; ".join(parts)
+
+
+def _example_or_format(machine: Machine, answers: Answers) -> str:
+    """A worked answer, else the format with the first selected provider: no list gave a name."""
+    return _example_models(machine, answers) or f"{next(iter(_selected(answers)), '<provider>')}=<model>"
+
+
+def _model_notes(machine: Machine, answers: Answers) -> tuple[str, ...]:
+    example = _example_models(machine, answers)
+    shown = (
+        f"Example built from the lists above: {example}"
+        if example
+        else f"No model list could be read here, so name the model yourself, for example "
+        f"{_example_or_format(machine, answers)}"
+    )
+    return (MODEL_FORMAT, shown, "Add or change models later: arhugula provider enable <provider> --model <model> [--model ...]")
+
+
+def _checked_models(name: str, listed: Any, machine: Machine) -> list[str]:
+    if isinstance(listed, str) or not isinstance(listed, list | tuple) or not listed:
+        raise ValueError(f"name at least one model for {name}")
+    provider, offered = _provider(machine, name), _offers(machine, name)
+    try:
+        return list(dict.fromkeys(providers.resolve(provider, str(model), offered).ref for model in listed))
+    except providers.ModelRefused as refused:
+        raise ValueError(str(refused)) from None
+
+
+def _adopt_models(value: Any, machine: Machine, answers: Answers) -> dict[str, list[str]]:
+    """Models given as data, checked against what each provider offers on this machine.
+
+    A provider the data leaves out takes its default; one that is not selected is dropped,
+    because the providers question decides the selection.
+    """
+    if not isinstance(value, Mapping):
+        raise ValueError("give the models as an object: one list of models per provider")
+    selected = _selected(answers)
+    given = {name: listed for name, listed in value.items() if name in selected}
+    models = {**_default_models(machine, answers), **{n: _checked_models(n, m, machine) for n, m in given.items()}}
+    unnamed = [name for name in selected if name not in models]
+    if unnamed:
+        state = machine.state_of(unnamed[0])
+        raise ValueError(
+            f"name a model for {', '.join(unnamed)}: no default is known, because "
+            f"`{state.provider.list_command or state.provider.command}` gave no model list "
+            f"({state.status.value}: {state.detail})"
+        )
+    return {name: models[name] for name in selected}
+
+
+def _keep_models(value: Any, machine: Machine, answers: Answers) -> tuple[dict[str, list[str]], tuple[str, ...]]:
+    """The models an earlier run stored, as the default: each one still offered is kept.
+
+    Where none of a provider's stored models is offered any more, the default shown is
+    the provider's own first choice, and a note says which stored model was dropped and why.
+    """
+    stored = value if isinstance(value, Mapping) else {}
+    defaults = _default_models(machine, answers)
+    kept: dict[str, list[str]] = {}
+    notes: list[str] = []
+    for name in _selected(answers):
+        provider, offered = _provider(machine, name), _offers(machine, name)
+        listed = [str(m) for m in stored.get(name, ()) if isinstance(m, str)]
+        refused = dict(providers.refusals(provider, listed, offered))
+        still = [providers.resolve(provider, m, offered).ref for m in listed if m not in refused]
+        notes += [f"stored before, no longer usable: {reason}" for reason in refused.values()]
+        if still or name in defaults:
+            kept[name] = still or defaults[name]
+        if refused and not still and name in defaults:
+            notes.append(f"so the default shown for {name} is {', '.join(defaults[name])}")
+    return kept, tuple(notes)
+
+
+def _parse_models(text: str, machine: Machine, answers: Answers) -> dict[str, list[str]]:
+    selected = _selected(answers)
+    named: dict[str, list[str]] = {}
+    for part in (piece.strip() for piece in text.split(";")):
+        if not part:
+            continue
+        name, equals, listed = (word.strip() for word in part.partition("="))
+        if not equals:
+            raise ValueError(f"`{part}` has no `=`: write <provider>=<model>, for example {_example_or_format(machine, answers)}")
+        if name not in selected:
+            raise ValueError(f"`{name}` is not one of the providers selected at question 2 ({', '.join(selected)})")
+        if name in named:
+            raise ValueError(f"`{name}` is named twice: put all its models in one part, {name}=<model>,<model>")
+        models = [model.strip() for model in listed.split(",") if model.strip()]
+        if not models:
+            raise ValueError(f"`{name}=` names no model: write {name}=<model>")
+        named[name] = models
+    if not named:
+        raise ValueError(f"name at least one provider, for example {_example_or_format(machine, answers)}")
+    return _adopt_models(named, machine, answers)
 
 
 def _ollama_selected(machine: Machine, answers: Answers) -> bool:
     return "ollama" in _selected(answers)
-
-
-def _model_options(machine: Machine, answers: Answers) -> tuple[Option, ...]:
-    return tuple(Option(name, "pulled") for name in machine.ollama_models or ())
 
 
 def _parse_text(text: str, machine: Machine, answers: Answers) -> str:
@@ -416,6 +626,7 @@ QUESTIONS: tuple[Question, ...] = (
         parse=_parse_providers,
         options=_provider_options,
         notes=_provider_notes,
+        adopt=_adopt_providers,
     ),
     Question(
         number=3,
@@ -441,16 +652,22 @@ QUESTIONS: tuple[Question, ...] = (
     ),
     Question(
         number=5,
-        id="ollama_model",
-        prompt="Ollama model?",
-        kind="text",
-        why="The model Ollama steps run on. Init offers to pull it when it is absent.",
-        default_doc="`llama3.2:3b`",
-        default=lambda machine, answers: providers.by_name("ollama").default_model,
-        parse=_parse_text,
+        id="models",
+        prompt="Which models should each selected provider make available? Type "
+        "<provider>=<model>,<model>, providers separated by `;`, or press Enter for the defaults.",
+        kind="models",
+        why="Routing, workflows and `--model` can use only the models named here. The first "
+        "one named for a provider is its default. Where a provider's tool lists its models "
+        "(Codex, Antigravity, Ollama), init checks each name against that list.",
+        default_doc="the first model each provider's own tool lists for your sign-in. Ollama: "
+        "`llama3.2:3b` (init offers to pull it when it is not pulled). Where a tool lists none: "
+        "`sonnet` for Claude Code, the catalogue's example model for a hosted API",
+        default=_default_models,
+        parse=_parse_models,
         options=_model_options,
-        applies=_ollama_selected,
-        applies_when="Ollama is selected",
+        notes=_model_notes,
+        adopt=_adopt_models,
+        keep=_keep_models,
     ),
     Question(
         number=6,
@@ -582,7 +799,11 @@ def _typed_default(question: Question, value: Any) -> str:
     """The text that parses back to `value`, for prompts whose input is letters or numbers."""
     match question.id:
         case "providers":
-            return "".join(providers.by_name(name).letter for name in value)
+            # Only the built-in providers have letters; init keeps an added one selected.
+            letters = {p.name: p.letter for p in providers.CATALOGUE}
+            return "".join(letters[name] for name in value if name in letters)
+        case "models":
+            return "; ".join(f"{name}={','.join(models)}" for name, models in value.items())
         case "workloads":
             return "".join(str(spec.WORKLOADS.index(name) + 1) for name in value)
         case "features":
@@ -611,13 +832,13 @@ def ask_all(
         if not question.applies(machine, answers):
             answers[question.id] = fallback
             continue
-        default = preset.get(question.id, fallback)
+        default, kept_notes = _preset_default(question, preset, fallback, machine, answers)
         typed_default = _typed_default(question, default)
         print(f"\n[{question.number}/{len(QUESTIONS)}] {question.prompt}", file=out)
         for option in question.options(machine, answers):
             note = f"  ({option.note})" if option.note else ""
             print(f"      [{option.value}] {option.label}{note}", file=out)
-        for note in question.notes(machine, answers):
+        for note in (*question.notes(machine, answers), *kept_notes):
             print(f"      note: {note}", file=out)
         while True:
             if accept_defaults:
@@ -644,6 +865,24 @@ def ask_all(
     return answers
 
 
+def _preset_default(
+    question: Question, preset: Answers, fallback: Any, machine: Machine, answers: Answers
+) -> tuple[Any, tuple[str, ...]]:
+    """An earlier answer as this question's default, with a note for each part that no longer holds.
+
+    Nothing stale is dropped quietly: either a note says what was dropped, or the stale
+    answer is shown as the default and parsing it says what is wrong.
+    """
+    if question.id not in preset:
+        return fallback, ()
+    if question.keep is not None:
+        return question.keep(preset[question.id], machine, answers)
+    try:
+        return question.adopt(preset[question.id], machine, answers), ()
+    except ValueError:
+        return preset[question.id], ()
+
+
 def describe(machine: Machine, preset: Answers) -> list[dict[str, Any]]:
     """The questions as data, for an agent to ask through its own surface.
 
@@ -654,7 +893,7 @@ def describe(machine: Machine, preset: Answers) -> list[dict[str, Any]]:
     described: list[dict[str, Any]] = []
     assumed: dict[str, Any] = {}
     for question in QUESTIONS:
-        default = preset.get(question.id, question.default(machine, assumed))
+        default, kept_notes = _preset_default(question, preset, question.default(machine, assumed), machine, assumed)
         assumed[question.id] = default
         described.append(
             {
@@ -671,7 +910,7 @@ def describe(machine: Machine, preset: Answers) -> list[dict[str, Any]]:
                     {"value": o.value, "label": o.label, "note": o.note}
                     for o in question.options(machine, assumed)
                 ],
-                "notes": list(question.notes(machine, assumed)),
+                "notes": [*question.notes(machine, assumed), *kept_notes],
             }
         )
     return described
@@ -693,7 +932,15 @@ def complete(machine: Machine, given: Answers) -> dict[str, Any]:
                     f"(`{question.id}`): {question.prompt}",
                     fix="add the answer; `init --questions-json` lists every question",
                 )
-            answers[question.id] = given[question.id]
+            try:
+                answers[question.id] = question.adopt(given[question.id], machine, answers)
+            except ValueError as wrong:
+                raise KitError(
+                    Exit.PRECONDITION,
+                    f"the answers file's answer to question {question.number} (`{question.id}`) "
+                    f"is not usable: {wrong}",
+                    fix="correct it; `init --questions-json` shows what this machine offers",
+                ) from wrong
         else:
             answers[question.id] = given.get(question.id, question.default(machine, answers))
     return answers

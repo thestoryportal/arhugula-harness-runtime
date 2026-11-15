@@ -10,7 +10,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from arhugula_kit import dependencies, deploy, detect, initflow, lima, preflight, vm
+from arhugula_kit import dependencies, deploy, detect, initflow, lima, preflight, spec, vm
 from arhugula_kit.errors import Exit, KitError
 from arhugula_kit.layout import Home
 from arhugula_kit.preflight import Stage, Subject
@@ -29,6 +29,7 @@ def _doctor(args: argparse.Namespace) -> int:
         deployment.home,
         ollama_host=deployment.spec.ollama_host,
         lima_home=deployment.spec.observability.lima_home or None,
+        added=spec.enabled_custom(raw),
     )
     print("\nDependencies:")
     for index, (dependency, state) in enumerate(dependencies.report(machine, deployment.home), start=1):
@@ -282,7 +283,7 @@ VERBS: tuple[Verb, ...] = (
             Arg(("--reinstall",), "rebuild even when already at that commit", {"action": "store_true"}),
             Arg(("--rollback",), "return to the environment the last upgrade replaced", {"action": "store_true"}),
         ),
-        example="arhugula upgrade --pin 0a75b1d06707faebee892f8f55ee04f1a2b20b28",
+        example="arhugula upgrade --pin <commit>",
         detail=(
             "Rebuilds the environment, regenerates every config, has the runtime load each "
             "project's config, and runs the smoke workflows."

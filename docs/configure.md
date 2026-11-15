@@ -123,7 +123,7 @@ The header names the answers file and repeats that no secret belongs in the file
 deployment_surface = "local-development"
 repository_root = "<project-path>"
 default_topology = "single-threaded-linear"
-enabled_provider_names = ["claude_code", "ollama", "codex", "gemini", "antigravity"]
+enabled_provider_names = ["claude_code", "ollama", "codex", "antigravity"]
 pidfile_path = "<home>/run/demo.pid"
 tenant_id = "demo"
 ollama_host = "http://127.0.0.1:11434"
@@ -205,6 +205,7 @@ This table explains each part of the file, from top to bottom.
 
 The routing rule: the config's first fallback chain serves every step; `--provider` (and `--model`) override it for one run; a manifest's own model binding does not select the provider.
 One manifest setting is the exception: a `model_binding` in `per_step_overrides` sends its step to the provider it names. See [How routing picks a provider](providers.md#how-routing-picks-a-provider).
+To choose a model and a thinking level for one step, role, workload class, the default or one run, see [Choose a model and a thinking level](providers.md#choose-a-model-and-a-thinking-level).
 
 A config can hold more parts than this table lists, for example prompt versions, validator bindings and clients for Model Context Protocol (MCP) tool servers.
 The [capability matrix](#capability-matrix) names the command behind each.

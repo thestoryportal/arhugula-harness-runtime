@@ -116,6 +116,12 @@ def validate_workflow(args: dict[str, Any]) -> Any:
     except WorkflowManifestLoadError as exc:
         raise Refused(exc.FAIL_CLASS, exc.reason) from exc
     entry = workflow.manifest_entry
+    default = workflow.default_model_binding
+
+    def bound(step_id: Any) -> Any:
+        override = entry.per_step_overrides.get(step_id)
+        return override.model_binding if override is not None and override.model_binding else default
+
     return {
         "workflow_id": str(entry.workflow_id),
         "workload_class": str(entry.workload_class.value),
@@ -126,7 +132,11 @@ def validate_workflow(args: dict[str, Any]) -> Any:
             "model": workflow.default_model_binding.model,
         },
         "steps": [
-            {"step_id": str(step.step_id), "step_kind": str(step.step_kind.value)}
+            {
+                "step_id": str(step.step_id),
+                "step_kind": str(step.step_kind.value),
+                "binding": {"provider": bound(step.step_id).provider, "model": bound(step.step_id).model},
+            }
             for step in workflow.steps
         ],
     }

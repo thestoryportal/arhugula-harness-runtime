@@ -128,7 +128,7 @@ arhugula upgrade [--pin SHA] [--reinstall] [--rollback]
 Example:
 
 ```sh
-arhugula upgrade --pin 0a75b1d06707faebee892f8f55ee04f1a2b20b28
+arhugula upgrade --pin <commit>
 ```
 
 
@@ -588,9 +588,33 @@ Example:
 arhugula provider check
 ```
 
+### `arhugula provider models`
+
+Show the models each enabled provider offers, which are available here, the default and the thinking levels.
+
+Where the provider's own tool lists its models (Codex: `codex debug models`; Antigravity: `agy models`; Ollama: the pulled models), that list is shown. Claude Code and the hosted APIs list none, so any name is accepted unchecked. A thinking level is written `<model>@<level>` for Claude Code and Codex.
+
+Source: kit (kit extension: added by this kit, not part of upstream).
+
+```text
+arhugula provider models <name>
+```
+
+| Argument | Meaning |
+| --- | --- |
+| `name` | Only this provider (it need not be enabled). |
+
+Example:
+
+```sh
+arhugula provider models codex
+```
+
 ### `arhugula provider enable`
 
-Make a provider available to routing and to `--provider`.
+Make a provider and its models available to routing and to `--provider`.
+
+A model the provider's own tool does not list for your sign-in is refused, and the message shows the list. To add a model later, name every model you want kept.
 
 Source: runtime (drives a capability of the harness runtime).
 
@@ -600,21 +624,21 @@ arhugula provider enable <name> [--model MODEL] [--command COMMAND]
 
 | Argument | Meaning |
 | --- | --- |
-| `name` | The provider. One of: `claude_code`, `ollama`, `codex`, `gemini`, `antigravity`, `anthropic`, `openai`. |
-| `--model` | The model this provider runs (default: the provider's usual model). |
+| `name` | The provider: a built-in one (claude_code, ollama, codex, antigravity, anthropic, openai) or one added with `provider add`. |
+| `--model` | A model to make available, as `<model>` or `<model>@<level>`; repeat it for more. The first is the provider's default. These replace the provider's models (default: the ones it already has, else the first its own tool lists). |
 | `--command` | The absolute path of its executable (default: found on PATH). |
 
 Example:
 
 ```sh
-arhugula provider enable codex
+arhugula provider enable codex --model gpt-6.1-sol@medium --model gpt-6-astra
 ```
 
 ### `arhugula provider disable`
 
 Remove a provider from the configs.
 
-The default and the fallback provider cannot be disabled; change the chain first.
+The default and the fallback provider cannot be disabled; change the chain first. Its models are kept for when it is enabled again.
 
 Source: runtime (drives a capability of the harness runtime).
 
@@ -624,19 +648,70 @@ arhugula provider disable <name>
 
 | Argument | Meaning |
 | --- | --- |
-| `name` | The provider. One of: `claude_code`, `ollama`, `codex`, `gemini`, `antigravity`, `anthropic`, `openai`. |
+| `name` | The provider: a built-in one (claude_code, ollama, codex, antigravity, anthropic, openai) or one added with `provider add`. |
 
 Example:
 
 ```sh
-arhugula provider disable gemini
+arhugula provider disable codex
+```
+
+### `arhugula provider add`
+
+Add your own provider: any command that reads a prompt and prints a reply.
+
+The runtime runs it as its `generic-command` kind: the command, then the arguments, with the prompt on standard input unless --prompt-transport is `arg`. `json` reads a Claude-style result object; `jsonl` reads Codex-style events. The provider is enabled at once and then behaves like a built-in one in `provider`, `routing` and `--provider`.
+
+Source: kit (kit extension: added by this kit, not part of upstream).
+
+```text
+arhugula provider add <name> --command COMMAND --args ARGS --model MODEL [--family FAMILY] [--prompt-transport PROMPT_TRANSPORT] [--response-format RESPONSE_FORMAT] [--auth-args AUTH_ARGS]
+```
+
+| Argument | Meaning |
+| --- | --- |
+| `name` | A new name: a lowercase letter, then lowercase letters, digits or `_`. |
+| `--command` | The absolute path of the executable. |
+| `--args` | The arguments after the command, as one quoted string; `{model}` becomes the step's model and `{prompt}` the prompt (with --prompt-transport arg); write `--args=...` when the string starts with `-`. |
+| `--model` | A model name to pass as `{model}`; repeat it for more; the first is the default. |
+| `--family` | The model family, for fallback-chain placement (default: local_open_weight). One of: `anthropic`, `openai`, `google`, `local_open_weight`. |
+| `--prompt-transport` | How the prompt reaches the command (default: stdin). One of: `stdin`, `arg`. |
+| `--response-format` | How the command prints its reply (default: text). One of: `text`, `json`, `jsonl`. |
+| `--auth-args` | Arguments of a sign-in check the runtime runs at start, as one quoted string; it must exit 0 (default: no check); write `--auth-args=...` when the string starts with `-`. |
+
+Example:
+
+```sh
+arhugula provider add local_echo --command <home>/kit/examples/providers/echo-provider --args="--model {model}" --auth-args=--version --model echo-1
+```
+
+### `arhugula provider remove`
+
+Remove a provider added with `provider add`.
+
+The default and the fallback provider cannot be removed; change the chain first.
+
+Source: kit (kit extension: added by this kit, not part of upstream).
+
+```text
+arhugula provider remove <name>
+```
+
+| Argument | Meaning |
+| --- | --- |
+| `name` | A provider added with `provider add`. |
+
+Example:
+
+```sh
+arhugula provider remove local_echo
 ```
 
 ### `arhugula provider set`
 
 Set one setting of a command-line provider.
 
-`timeout_seconds` is how long one call may take, in seconds. `auth_check` is whether the runtime checks the sign-in when it starts (true or false). `auth_args` is the arguments of the sign-in check, as a JSON list of strings; the runtime reads it for the Gemini tool only.
+`timeout_seconds` is how long one call may take, in seconds. `auth_check` is whether the runtime checks the sign-in when it starts (true or false).
 
 Source: runtime (drives a capability of the harness runtime).
 
@@ -647,7 +722,7 @@ arhugula provider set <name> <key> <value>
 | Argument | Meaning |
 | --- | --- |
 | `name` | An enabled CLI provider. |
-| `key` | The setting. One of: `timeout_seconds`, `auth_check`, `auth_args`. |
+| `key` | The setting. One of: `timeout_seconds`, `auth_check`. |
 | `value` | The value; JSON for lists, numbers and true/false. |
 
 Example:
@@ -669,7 +744,7 @@ arhugula provider unset <name> <key>
 | Argument | Meaning |
 | --- | --- |
 | `name` | An enabled CLI provider. |
-| `key` | The setting. One of: `timeout_seconds`, `auth_check`, `auth_args`. |
+| `key` | The setting. One of: `timeout_seconds`, `auth_check`. |
 
 Example:
 
@@ -796,7 +871,7 @@ arhugula routing model set <provider> <model>
 | Argument | Meaning |
 | --- | --- |
 | `provider` | An enabled provider. |
-| `model` | The model name as the provider knows it. |
+| `model` | One of its available models, as <model> or <model>@<level> (`arhugula provider models` lists them). |
 
 Example:
 

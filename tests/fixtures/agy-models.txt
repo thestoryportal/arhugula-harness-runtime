@@ -1,0 +1,6 @@
+Fetching available models...
+sky-2-low	Sky 2 (Low)
+sky-2-high	Sky 2 (High)
+
+not a model line
+sky-flash	Sky Flash

@@ -28,13 +28,13 @@ cat <home>/kit/PIN
 ```
 
 ```text
-0a75b1d06707faebee892f8f55ee04f1a2b20b28
+2e1ba1f764be27601441936692da2b6c30d61f7c
 ```
 
 `arhugula --version` prints the kit's version and the same commit, read from `PIN`:
 
 ```text
-arhugula kit 0.1.0; upstream pin 0a75b1d06707faebee892f8f55ee04f1a2b20b28
+arhugula kit 0.1.0; upstream pin 2e1ba1f764be27601441936692da2b6c30d61f7c
 ```
 
 The environment keeps its own record of the commit it was built from, in `<home>/env/.arhugula-pin`. `arhugula upgrade` compares the commit you ask for with that record, not with `PIN`.
@@ -126,16 +126,17 @@ arhugula upgrade --pin <sha>
 `<sha>` is the full 40-character id of a commit on upstream's `main`. A shorter id is refused with exit code 2.
 Without `--pin`, the upgrade moves to the commit in `<home>/kit/PIN`.
 
-An upgrade and its re-verify ran on the development machine (*witnessed*). The install prints one line per stage:
+An upgrade and its re-verify ran on the development machine (*witnessed*). The install prints one line per stage.
+The `verify` stage proves what the install put in the environment: see [what the upgrade does](#what-the-upgrade-does-in-order).
 
 ```text
-install: upstream at 0a75b1d0
+install: upstream at 2e1ba1f7
 install: build wheels
 install: export hashed locks
 install: packaging gate
 install: environment
 install: verify
-install: installed 0a75b1d0 at <home>/env
+install: installed 2e1ba1f7 at <home>/env
 ```
 
 The re-verify ends with the smoke runs:
@@ -179,8 +180,8 @@ The environment in use is set aside while the new one is made, and it comes back
 | 2 | `<home>/upstream` is checked out at the new commit. The network is used only when the checkout does not hold that commit yet. | The environment and `PIN` are unchanged. |
 | 3 | The seven wheels and the two hashed lock files are built into `<home>/dist`. | The environment and `PIN` are unchanged. |
 | 4 | Upstream's packaging gate checks the build. It must print `ready: yes`. | The environment and `PIN` are unchanged. |
-| 5 | The environment in use is set aside at `<home>/env.previous`. A new environment is created at `<home>/env` and installed from the hashed locks and the wheels. | The environment in use is moved back to `<home>/env`. The copy at `<home>/env.rollback` is untouched. |
-| 6 | The new environment is checked: it imports the harness from its own files, and its three commands exist. Then it records its commit in `<home>/env/.arhugula-pin`. Last, the environment that was set aside replaces the copy at `<home>/env.rollback`. | The environment in use is moved back to `<home>/env`. The copy at `<home>/env.rollback` is untouched. |
+| 5 | The environment in use is set aside at `<home>/env.previous`. A new environment is created at `<home>/env` and installed from the hashed locks and the wheels. The wheels are installed without the package cache, because every harness wheel carries the version `0.0.0` and the cache cannot tell one commit's build from another's. | The environment in use is moved back to `<home>/env`. The copy at `<home>/env.rollback` is untouched. |
+| 6 | The new environment is checked: it imports the harness from its own files, every installed harness file has the hash of the wheel just built, and its three commands exist. Then it records its commit in `<home>/env/.arhugula-pin`. Last, the environment that was set aside replaces the copy at `<home>/env.rollback`. | The environment in use is moved back to `<home>/env`. The copy at `<home>/env.rollback` is untouched. |
 | 7 | The kit writes the new commit id to `<home>/kit/PIN`. | |
 | 8 | The re-verify runs. See the next section. | The new environment stays. Roll back if you need to. |
 
@@ -217,7 +218,8 @@ The install's own exit code is in the message. It tells you which stage stopped:
 | 73 | Building the wheels. | `install-build.log` |
 | 74 | Exporting the hashed locks. | `install-export.log` |
 | 75 | Upstream's packaging gate refused the build. | `install-gate.log` |
-| 76, 77, 78 | Setting the environment in use aside, or creating, filling or checking the new environment. | `install-env.log` |
+| 76, 77 | Setting the environment in use aside, or creating or filling the new environment. | `install-env.log` |
+| 78 | Checking the new environment. Either it does not import the harness from its own files, or a file is missing, or it does not hold the wheels just built. In the last case the message is `the environment does not hold the harness wheels just built in <home>/dist`, and the lines above it name up to five installed files that differ. The earlier environment is put back. | `install-env.log` |
 | 130 | The install was interrupted in step 5 or 6. The environment in use is back in place. | |
 
 ## What the re-verify runs
@@ -258,6 +260,10 @@ arhugula upgrade --reinstall
 `--reinstall` builds the environment again at the commit in `PIN`, even when the environment is already at that commit. It follows the same steps as an upgrade. It also moves the environment it replaces to `<home>/env.rollback`, in place of the copy that was there.
 
 Use it when the environment is damaged. For example, a file under `<home>/env` was changed or removed. After that rebuild, `<home>/env.rollback` holds the damaged environment, so do not roll back to it.
+
+Use it once if an earlier kit version upgraded your deployment.
+That version installed the wheels through the package cache, so an upgrade could rebuild the wheels and still install the earlier commit's files (*witnessed*).
+The installer now checks the installed files against the wheels, and `arhugula upgrade --reinstall` replaces the environment with one that passed that check.
 
 The same holds after `arhugula relocate`, which rebuilds the environment in the same way.
 `<home>/env.rollback` then holds the environment that was built for the earlier home, and its scripts carry that path.

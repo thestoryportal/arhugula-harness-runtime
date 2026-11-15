@@ -9,15 +9,21 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import os
+import shlex
 import tomllib
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
-from arhugula_kit import deploy, overlay, providers, render, runtime
+from arhugula_kit import deploy, modelwrap, overlay, providers, render, runtime, spec as answers_file
 from arhugula_kit.common import say, table
 from arhugula_kit.deploy import Deployment
 from arhugula_kit.errors import Exit, KitError
-from arhugula_kit.spec import WORKLOADS, Spec
+from arhugula_kit.layout import Home
+from arhugula_kit.providers import Listing, Offer, Provider
+from arhugula_kit.spec import WORKLOADS, CustomProvider, Spec
 from arhugula_kit.verbs import Arg, Verb
 
 ON_OFF = ("on", "off")
@@ -43,30 +49,119 @@ def rendered(deployment: Deployment, project: str | None = None) -> dict[str, An
     return document["runtime"]
 
 
-def _binding(text: str, spec: Spec) -> dict[str, str]:
-    """`provider:model` (or just `provider`) as a model binding of a selected provider."""
-    name, _, model = text.partition(":")
+def _state(spec: Spec, provider: Provider) -> providers.ProviderState:
+    """What the provider's own tool reports now, its model list included."""
+    default = spec.model_of(provider.name) if provider.name == "ollama" and provider.name in spec.models else ""
+    return providers.check(provider, ollama_host=spec.ollama_host, ollama_model=default)
+
+
+def offers(spec: Spec, provider: Provider) -> tuple[Offer, ...]:
+    """The models the provider's own tool lists now; empty for a tool that lists none."""
+    return _state(spec, provider).models if provider.listing is not Listing.NONE else ()
+
+
+def _resolved(provider: Provider, text: str, offered: Sequence[Offer]) -> providers.Chosen:
+    """A model as `resolve` reads it, or the kit's refusal with the command that lists the models."""
+    try:
+        return providers.resolve(provider, text, offered)
+    except providers.ModelRefused as refused:
+        raise KitError(Exit.PRECONDITION, str(refused), fix=f"arhugula provider models {provider.name}") from None
+
+
+def _enabled(spec: Spec, name: str) -> Provider:
+    provider = spec.provider(name)
     if name not in spec.providers:
         raise KitError(
             Exit.PRECONDITION,
             f"{name!r} is not an enabled provider (enabled: {', '.join(spec.providers)})",
-            fix=f"arhugula provider enable {name}",
+            fix=f"arhugula provider enable {name} --model <model>",
         )
-    return {"provider": name, "model": model or spec.model_of(name)}
+    return provider
+
+
+def _available_model(spec: Spec, provider: Provider, text: str) -> str:
+    """A model routing may use: one this deployment made available, with any level it has."""
+    offered = offers(spec, provider)
+    chosen = _resolved(provider, text, offered)
+    available = spec.available(provider.name)
+    if providers.model_id(provider, chosen.ref, offered) not in providers.available_ids(provider, available, offered):
+        raise KitError(
+            Exit.PRECONDITION,
+            f"`{chosen.ref}` is not one of the models available for {provider.name} "
+            f"({', '.join(available)})",
+            fix=providers.enable_command(provider.name, [*available, chosen.ref]),
+        )
+    return chosen.ref
+
+
+def _binding(text: str, spec: Spec) -> dict[str, str]:
+    """`provider:model` (or just `provider`) as a model binding of an enabled provider."""
+    name, _, model = text.partition(":")
+    provider = _enabled(spec, name)
+    return {"provider": name, "model": _available_model(spec, provider, model) if model else spec.model_of(name)}
+
+
+def _with_default(spec: Spec, provider: str, model: str) -> dict[str, tuple[str, ...]]:
+    """The deployment's models with `model` first for `provider`, so it becomes the default."""
+    rest = tuple(m for m in spec.available(provider) if m != model)
+    return {**spec.models, provider: (model, *rest)}
+
+
+# Where the routing verbs store a model binding in an overlay: the table, the binding's key
+# inside an entry, what an entry is called, and the verb that removes one deployment-wide.
+BINDING_TABLES: tuple[tuple[str, str, str, str], ...] = (
+    ("per_role_bindings", "preferred_model_binding", "role", "arhugula routing role unbind {key}"),
+    ("per_workload_overrides", "model_binding_override", "workload", "arhugula routing workload clear {key}"),
+)
+
+
+def _bindings(spec: Spec) -> list[tuple[str, Mapping[str, Any], str]]:
+    """Every model binding the stored overlays hold: where it is, the binding, the command that removes it."""
+    found = []
+    for scope, tree in {"": spec.overlay, **spec.project_overlays}.items():
+        for table, field, called, unbind in BINDING_TABLES:
+            entries = overlay.get(tree, ("runtime", "routing_manifest", table), {})
+            for key, entry in entries.items() if isinstance(entries, Mapping) else ():
+                binding = entry.get(field) if isinstance(entry, Mapping) else None
+                if isinstance(binding, Mapping):
+                    where = f"{called} {key}" + (f" (project {scope})" if scope else "")
+                    fix = (
+                        f"arhugula config unset routing_manifest.{table}.{key} --project {scope}"
+                        if scope else unbind.format(key=key)
+                    )
+                    found.append((where, binding, fix))
+    return found
+
+
+def _refuse_dangling(spec: Spec, provider: Provider, kept: Sequence[str], offered: Sequence[Offer] = ()) -> None:
+    """Refuse a change that leaves a stored binding naming `provider` with a model outside `kept`.
+
+    `kept` empty means the provider itself goes. The runtime loads a config whose binding
+    names a provider or model the deployment no longer has, so this is the one check.
+    """
+    keep = providers.available_ids(provider, kept, offered)
+    dangling = [
+        (where, binding, fix)
+        for where, binding, fix in _bindings(spec)
+        if binding.get("provider") == provider.name
+        and providers.model_id(provider, str(binding.get("model", "")), offered) not in keep
+    ]
+    if dangling:
+        what = f"models of {provider.name} that this leaves out" if kept else provider.name
+        raise KitError(
+            Exit.PRECONDITION,
+            f"routing still binds to {what}: "
+            + ", ".join(f"{where} -> {binding.get('provider')}/{binding.get('model')}" for where, binding, _ in dangling),
+            fix="; ".join(dict.fromkeys(fix for _, _, fix in dangling)) + " first",
+        )
 
 
 # --- provider ---------------------------------------------------------------------------
 
 
 def _states(deployment: Deployment) -> list[providers.ProviderState]:
-    return [
-        providers.check(
-            provider,
-            ollama_host=deployment.spec.ollama_host,
-            ollama_model=deployment.spec.ollama_model if provider.name == "ollama" else "",
-        )
-        for provider in providers.CATALOGUE
-    ]
+    spec = deployment.spec
+    return [_state(spec, provider) for provider in spec.known_providers()]
 
 
 def _role(spec: Spec, name: str) -> str:
@@ -77,6 +172,11 @@ def _role(spec: Spec, name: str) -> str:
     return "enabled" if name in spec.providers else "-"
 
 
+def _shown_models(spec: Spec, name: str) -> str:
+    available = spec.available(name)
+    return ", ".join(available) if available else "-"
+
+
 def _provider_list(args: argparse.Namespace) -> int:
     deployment = deploy.open_deployment()
     spec = deployment.spec
@@ -85,21 +185,35 @@ def _provider_list(args: argparse.Namespace) -> int:
             (
                 state.provider.name,
                 _role(spec, state.provider.name),
-                spec.model_of(state.provider.name) if state.provider.name in spec.providers else "-",
+                _shown_models(spec, state.provider.name) if state.provider.name in spec.providers else "-",
                 state.provider.access.value,
                 state.status.value,
             )
             for state in _states(deployment)
         ],
-        header=("provider", "role", "model", "access", "state"),
+        header=("provider", "role", "models (first = default)", "access", "state"),
     )
+    say("\nmodels and thinking levels in detail: arhugula provider models")
     return Exit.OK
+
+
+def _model_report(spec: Spec, state: providers.ProviderState) -> tuple[list[str], int]:
+    """The lines about a provider's available models, and how many its tool no longer offers."""
+    provider, available = state.provider, spec.available(state.provider.name)
+    stale = providers.refusals(provider, available, state.models)
+    lines = [f"    models: {', '.join(available)} (default {available[0]})"] if available else []
+    lines += [f"    not offered: {reason}" for _, reason in stale]
+    if stale:
+        lines.append(f"    fix: {providers.repair_command(provider, available, state.models)}")
+    elif provider.listing is Listing.NONE or not state.models:
+        lines.append(f"    note: {provider.title} gave no model list here, so these names could not be checked")
+    return lines, len(stale)
 
 
 def _provider_check(args: argparse.Namespace) -> int:
     deployment = deploy.open_deployment()
     spec = deployment.spec
-    problems = 0
+    problems = stale = 0
     for state in _states(deployment):
         name = state.provider.name
         if name not in spec.providers and not args.all:
@@ -110,38 +224,180 @@ def _provider_check(args: argparse.Namespace) -> int:
             say(f"    command: {state.command}")
         if state.fix:
             say(f"    fix: {state.fix}")
+        if name in spec.providers:
+            lines, count = _model_report(spec, state)
+            for line in lines:
+                say(line)
+            stale += count
         if state.provider.caveat:
             say(f"    note: {state.provider.caveat}")
         if name in (spec.primary, spec.fallback) and not state.usable:
             problems += 1
-    if problems:
+    if problems or stale:
+        parts = [f"{problems} provider(s) that the routing depends on are not usable"] if problems else []
+        parts += [f"{stale} model(s) named here are not offered by the provider's own tool"] if stale else []
         raise KitError(
             Exit.PRECONDITION,
-            f"{problems} provider(s) that the routing depends on are not usable",
+            "; ".join(parts),
             fix="follow the `fix:` lines above, or `arhugula routing chain set <provider>`",
         )
     return Exit.OK
 
 
+def _levels_of(provider: Provider, offer: Offer | None) -> str:
+    if not provider.level_args:
+        return "-"
+    levels = providers.levels_of(provider, offer)
+    default = offer.default_level if offer is not None else ""
+    return " ".join(f"{level}*" if level == default else level for level in levels) or (
+        "none" if offer is not None else "any"
+    )
+
+
+def _here(available: Sequence[str], ref: str) -> str:
+    """Whether a listed model is available in this deployment, and with which level."""
+    if not ref:
+        return "-"
+    _, at, level = ref.rpartition("@")
+    return ("default" if ref == available[0] else "available") + (f" @{level}" if at else "")
+
+
+def _provider_models(args: argparse.Namespace) -> int:
+    deployment = deploy.open_deployment()
+    spec = deployment.spec
+    chosen = [spec.provider(args.name)] if args.name else [spec.provider(n) for n in spec.providers]
+    for provider in chosen:
+        state = _state(spec, provider)
+        available = spec.available(provider.name)
+        names = {providers.model_id(provider, ref, state.models): ref for ref in reversed(available)}
+        enabled = provider.name in spec.providers
+        say(f"{provider.name} ({provider.title}){'' if enabled else ': not enabled'}")
+        if state.models:
+            source = {Listing.SIGN_IN: "this sign-in offers", Listing.PULLED: "pulled here"}[provider.listing]
+            say(f"  {source} (from `{provider.list_command}`):")
+            # A column the tool gives nothing for (Ollama has neither levels nor titles) is left out.
+            columns = [("    model", lambda offer, ref: f"    {offer.id}"),
+                       ("here", lambda offer, ref: _here(available, ref))]
+            if provider.level_args:
+                columns.append(("levels (* = its default)", lambda offer, ref: _levels_of(provider, offer)))
+            if any(offer.title for offer in state.models):
+                columns.append(("shown as", lambda offer, ref: offer.title or "-"))
+            table(
+                [tuple(cell(offer, names.get(offer.id, "")) for _, cell in columns) for offer in state.models],
+                header=tuple(title for title, _ in columns),
+            )
+            listed = {offer.id for offer in state.models}
+            missing = [ref for ref in available if providers.model_id(provider, ref, state.models) not in listed]
+            for ref in missing:
+                say(f"  {ref}: available here, but not in that list")
+            if missing:
+                fix = (
+                    "; ".join(f"ollama pull {ref}" for ref in missing)
+                    if provider.listing is Listing.PULLED
+                    else providers.repair_command(provider, available, state.models)
+                )
+                say(f"  fix: {fix}")
+        else:
+            why = (
+                f"`{provider.list_command}` gave no list ({state.status.value}: {state.detail})"
+                if provider.list_command
+                else "its tool lists no models"
+            )
+            examples = f"; for example {', '.join(provider.examples)}" if provider.examples else ""
+            say(f"  {why}, so any model name is accepted unchecked{examples}")
+            say(f"  available here: {', '.join(available) or '-'}" + (f" (default {available[0]})" if available else ""))
+            if provider.level_args:
+                say(f"  thinking levels, written <model>@<level>: {_levels_of(provider, None)}")
+        if not provider.level_args:
+            say(f"  thinking level: {provider.level_elsewhere}")
+        say("")
+    say("make models available (the first is the default): arhugula provider enable <provider> --model <model> [--model ...]")
+    return Exit.OK
+
+
+def _executable(text: str) -> str:
+    path = Path(text).expanduser()
+    if not path.is_absolute() or not path.is_file() or not os.access(path, os.X_OK):
+        raise KitError(
+            Exit.PRECONDITION,
+            f"{text} is not the absolute path of an executable file",
+            fix="give the full path, for example the output of `command -v <tool>`",
+        )
+    # The runtime already runs the kit's wrapper; as the real command it would exec itself.
+    if modelwrap.is_generated(path):
+        raise KitError(
+            Exit.PRECONDITION,
+            f"{text} is the kit's own wrapper for a provider, not the provider's CLI",
+            fix="give the CLI's own path, for example the output of `command -v <tool>`",
+        )
+    return str(path)
+
+
 def _provider_enable(args: argparse.Namespace) -> int:
     deployment = deploy.open_deployment()
     spec = deployment.spec
-    provider = providers.by_name(args.name)
+    provider = spec.provider(args.name)
     if provider.caveat:
         say(f"note: {provider.caveat}")
-    models = {**spec.models, **({args.name: args.model} if args.model else {})}
-    commands = {**spec.commands, **({args.name: args.command} if args.command else {})}
+    state = _state(spec, provider)
+    requested = args.model or list(spec.available(args.name)) or [providers.first_choice(provider, state.models)]
+    if not all(requested):
+        raise KitError(
+            Exit.PRECONDITION,
+            f"{provider.title} has no model to propose: {state.detail}",
+            fix=f"arhugula provider enable {args.name} --model <model>  (the models: arhugula provider models {args.name})",
+        )
+    chosen = [_resolved(provider, model, state.models) for model in requested]
+    for note in dict.fromkeys(c.note for c in chosen if c.note):
+        say(f"note: {note}")
+    models = {**spec.models, args.name: tuple(dict.fromkeys(c.ref for c in chosen))}
+    _refuse_dangling(spec, provider, models[args.name], state.models)
+    commands, custom = dict(spec.commands), dict(spec.custom_providers)
+    if args.command and provider.is_custom:
+        custom[args.name] = replace(custom[args.name], command=_executable(args.command))
+    elif args.command:
+        commands[args.name] = _executable(args.command)
     selected = tuple(dict.fromkeys((*spec.providers, args.name)))
-    deploy.apply(deployment, replace(spec, providers=selected, models=models, commands=commands))
-    say(f"enabled {args.name} (model {models.get(args.name, provider.default_model)}).")
+    deploy.apply(
+        deployment,
+        replace(spec, providers=selected, models=models, commands=commands, custom_providers=custom),
+    )
+    say(f"enabled {args.name}; models: {', '.join(models[args.name])} (default {models[args.name][0]}).")
     say("check it:   arhugula provider check")
     say(f"try it:     arhugula run minimal.toml --provider {args.name}")
     return Exit.OK
 
 
+def _disable_retired(name: str) -> int:
+    """Remove a provider the kit no longer knows from an answers file that still names it.
+
+    The deployment does not load while its answers name such a provider, so this works on
+    the stored document itself and then regenerates as any verb does.
+    """
+    home = Home.of_kit()
+    raw = answers_file.migrate(answers_file.read_raw(home.spec_file))
+    if name not in raw.get("providers", ()):
+        say(f"{name} is not enabled.")
+        return Exit.OK
+    if raw.get("primary") == name:
+        raise KitError(
+            Exit.PRECONDITION,
+            f"{name} is the default provider, and it is no longer a provider: {providers.RETIRED[name]}",
+            fix=f"{home.kit / 'init'} --reconfigure  (it asks for another default provider)",
+        )
+    fragments = render.fragments()
+    changed = answers_file.parse(answers_file.without_provider(raw, name), known_features=tuple(fragments))
+    deploy.apply(Deployment(home, changed, fragments), changed)
+    say(f"removed {name} from this deployment ({providers.RETIRED[name]}).")
+    return Exit.OK
+
+
 def _provider_disable(args: argparse.Namespace) -> int:
+    if args.name in providers.RETIRED:
+        return _disable_retired(args.name)
     deployment = deploy.open_deployment()
     spec = deployment.spec
+    spec.provider(args.name)
     if args.name in (spec.primary, spec.fallback):
         raise KitError(
             Exit.PRECONDITION,
@@ -151,6 +407,7 @@ def _provider_disable(args: argparse.Namespace) -> int:
     if args.name not in spec.providers:
         say(f"{args.name} is not enabled.")
         return Exit.OK
+    _refuse_dangling(spec, spec.provider(args.name), ())
     selected = tuple(n for n in spec.providers if n != args.name)
     deploy.apply(deployment, replace(spec, providers=selected))
     say(f"disabled {args.name}.")
@@ -188,22 +445,109 @@ def _provider_key_delete(args: argparse.Namespace) -> int:
     return Exit.OK
 
 
+def _provider_add(args: argparse.Namespace) -> int:
+    deployment = deploy.open_deployment()
+    spec = deployment.spec
+    name = args.name
+    if name in spec.custom_providers:
+        raise KitError(
+            Exit.PRECONDITION,
+            f"a provider named {name!r} was already added",
+            fix=f"arhugula provider remove {name}, then add it again",
+        )
+    if any(p.name == name for p in providers.CATALOGUE) or name in providers.RETIRED:
+        raise KitError(
+            Exit.USAGE,
+            f"{name!r} is the name of a {'retired' if name in providers.RETIRED else 'built-in'} provider; "
+            "choose another name",
+            fix=(f"arhugula provider enable {name}" if name not in providers.RETIRED
+                 else "arhugula provider add <another-name> --command ... --args ... --model ..."),
+        )
+    try:
+        argv, auth = shlex.split(args.args), shlex.split(args.auth_args or "")
+    except ValueError as exc:
+        raise KitError(
+            Exit.USAGE,
+            f"--args or --auth-args is not a valid command line: {exc}",
+            fix='close every quote inside the string, for example --args="--model {model} --name \'two words\'"',
+        ) from None
+    entry = CustomProvider(
+        command=_executable(args.command),
+        args=tuple(argv),
+        family=args.family,
+        prompt_transport=args.prompt_transport,
+        response_format=args.response_format,
+        auth_args=tuple(auth),
+    )
+    shaped = providers.custom(
+        name, command=entry.command, args=entry.args, family=entry.family,
+        prompt_transport=entry.prompt_transport, response_format=entry.response_format,
+        auth_args=entry.auth_args,
+    )
+    models = tuple(dict.fromkeys(_resolved(shaped, model, ()).ref for model in args.model))
+    if not any("{model}" in word for word in argv):
+        say("note: --args has no {model}, so the command is not told which model a step asks for")
+    changed = replace(
+        spec,
+        custom_providers={**spec.custom_providers, name: entry},
+        providers=tuple(dict.fromkeys((*spec.providers, name))),
+        models={**spec.models, name: models},
+    )
+    deploy.apply(deployment, changed)
+    say(f"added and enabled {name}; models: {', '.join(models)} (default {models[0]}).")
+    say("check it:   arhugula provider check")
+    say(f"try it:     arhugula run minimal.toml --provider {name}")
+    return Exit.OK
+
+
+def _provider_remove(args: argparse.Namespace) -> int:
+    deployment = deploy.open_deployment()
+    spec = deployment.spec
+    name = args.name
+    if name not in spec.custom_providers:
+        raise KitError(
+            Exit.PRECONDITION,
+            f"{name!r} is not a provider added with `provider add` (added: {', '.join(spec.custom_providers) or 'none'})",
+            fix=f"arhugula provider disable {name}" if name in spec.providers else "arhugula provider list",
+        )
+    if name in (spec.primary, spec.fallback):
+        raise KitError(
+            Exit.PRECONDITION,
+            f"{name} is the {_role(spec, name)} provider",
+            fix="arhugula routing chain set <another-provider> first",
+        )
+    _refuse_dangling(spec, spec.provider(name), ())
+
+    def without(mapping: Any) -> dict[str, Any]:
+        return {key: value for key, value in mapping.items() if key != name}
+
+    changed = replace(
+        spec,
+        providers=tuple(n for n in spec.providers if n != name),
+        custom_providers=without(spec.custom_providers),
+        models=without(spec.models),
+        provider_settings=without(spec.provider_settings),
+    )
+    deploy.apply(deployment, changed)
+    say(f"removed {name}.")
+    return Exit.OK
+
+
 # Only the settings the runtime reads for the provider kinds this kit configures.
 PROVIDER_SETTINGS = {
     "timeout_seconds": "how long one call may take, in seconds",
     "auth_check": "whether the runtime checks the sign-in when it starts (true or false)",
-    "auth_args": "the arguments of the sign-in check, as a JSON list of strings; the runtime "
-    "reads it for the Gemini tool only",
 }
 
 
 def _cli_provider(deployment: Deployment, name: str) -> providers.Provider:
-    provider = providers.by_name(name)
+    provider = deployment.spec.provider(name)
     if provider.access is not providers.Access.CLI or name not in deployment.spec.providers:
+        cli = ", ".join(p.name for p in deployment.spec.known_providers() if p.access is providers.Access.CLI)
         raise KitError(
             Exit.PRECONDITION,
             f"{name} is not an enabled command-line provider; these settings belong to "
-            "the CLI providers (claude_code, codex, gemini, antigravity)",
+            f"the CLI providers ({cli})",
             fix=f"arhugula provider enable {name}",
         )
     return provider
@@ -277,16 +621,15 @@ def _chain_set(args: argparse.Namespace) -> int:
         say(f"note: {providers.by_name('codex').caveat}")
     if fallback and fallback["provider"] == primary["provider"]:
         raise KitError(Exit.USAGE, "the fallback must be a different provider from the default")
-    models = {**spec.models, primary["provider"]: primary["model"]}
+    models = _with_default(spec, primary["provider"], primary["model"])
     if fallback:
-        models[fallback["provider"]] = fallback["model"]
+        models = _with_default(replace(spec, models=models), fallback["provider"], fallback["model"])
     kept = spec.fallback if args.fallback is None and spec.fallback != primary["provider"] else ""
     changed = replace(
         spec,
         primary=primary["provider"],
         fallback=fallback["provider"] if fallback else kept,
         models=models,
-        ollama_model=models.get("ollama", spec.ollama_model),
     )
     deploy.apply(deployment, changed)
     say(f"default provider: {changed.primary}/{changed.model_of(changed.primary)}")
@@ -299,13 +642,10 @@ def _model_set(args: argparse.Namespace) -> int:
     deployment = deploy.open_deployment()
     spec = deployment.spec
     binding = _binding(f"{args.provider}:{args.model}", spec)
-    changed = replace(
-        spec,
-        models={**spec.models, binding["provider"]: binding["model"]},
-        ollama_model=binding["model"] if binding["provider"] == "ollama" else spec.ollama_model,
-    )
+    changed = replace(spec, models=_with_default(spec, binding["provider"], binding["model"]))
     deploy.apply(deployment, changed)
-    say(f"{binding['provider']} now runs {binding['model']}.")
+    say(f"{binding['provider']} now runs {binding['model']} by default "
+        f"(available: {', '.join(changed.available(binding['provider']))}).")
     return Exit.OK
 
 
@@ -645,8 +985,9 @@ def _mcp_test(args: argparse.Namespace) -> int:
     return Exit.OK
 
 
-PROVIDER_NAMES = tuple(p.name for p in providers.CATALOGUE)
+BUILT_IN = ", ".join(p.name for p in providers.CATALOGUE)
 SDK_NAMES = tuple(p.name for p in providers.CATALOGUE if p.access is providers.Access.SDK)
+PROVIDER_ARG = Arg(("name",), f"the provider: a built-in one ({BUILT_IN}) or one added with `provider add`")
 
 VERBS: tuple[Verb, ...] = (
     Verb(
@@ -669,25 +1010,99 @@ VERBS: tuple[Verb, ...] = (
         ),
     ),
     Verb(
+        ("provider", "models"),
+        "Show the models each enabled provider offers, which are available here, the default and the thinking levels.",
+        "kit",
+        _provider_models,
+        (Arg(("name",), "only this provider (it need not be enabled)", {"nargs": "?", "default": ""}),),
+        example="arhugula provider models codex",
+        detail=(
+            "Where the provider's own tool lists its models (Codex: `codex debug models`; "
+            "Antigravity: `agy models`; Ollama: the pulled models), that list is shown. Claude "
+            "Code and the hosted APIs list none, so any name is accepted unchecked. A thinking "
+            "level is written `<model>@<level>` for Claude Code and Codex."
+        ),
+    ),
+    Verb(
         ("provider", "enable"),
-        "Make a provider available to routing and to `--provider`.",
+        "Make a provider and its models available to routing and to `--provider`.",
         "runtime",
         _provider_enable,
         (
-            Arg(("name",), "the provider", {"choices": PROVIDER_NAMES}),
-            Arg(("--model",), "the model this provider runs (default: the provider's usual model)"),
+            PROVIDER_ARG,
+            Arg(
+                ("--model",),
+                "a model to make available, as `<model>` or `<model>@<level>`; repeat it for more. "
+                "The first is the provider's default. These replace the provider's models (default: "
+                "the ones it already has, else the first its own tool lists)",
+                {"action": "append", "metavar": "MODEL"},
+            ),
             Arg(("--command",), "the absolute path of its executable (default: found on PATH)"),
         ),
-        example="arhugula provider enable codex",
+        example="arhugula provider enable codex --model gpt-6.1-sol@medium --model gpt-6-astra",
+        detail=(
+            "A model the provider's own tool does not list for your sign-in is refused, and the "
+            "message shows the list. To add a model later, name every model you want kept."
+        ),
     ),
     Verb(
         ("provider", "disable"),
         "Remove a provider from the configs.",
         "runtime",
         _provider_disable,
-        (Arg(("name",), "the provider", {"choices": PROVIDER_NAMES}),),
-        example="arhugula provider disable gemini",
-        detail="The default and the fallback provider cannot be disabled; change the chain first.",
+        (PROVIDER_ARG,),
+        example="arhugula provider disable codex",
+        detail=(
+            "The default and the fallback provider cannot be disabled; change the chain first. "
+            "Its models are kept for when it is enabled again."
+        ),
+    ),
+    Verb(
+        ("provider", "add"),
+        "Add your own provider: any command that reads a prompt and prints a reply.",
+        "kit",
+        _provider_add,
+        (
+            Arg(("name",), "a new name: a lowercase letter, then lowercase letters, digits or `_`"),
+            Arg(("--command",), "the absolute path of the executable", {"required": True}),
+            Arg(
+                ("--args",),
+                "the arguments after the command, as one quoted string; `{model}` becomes the "
+                "step's model and `{prompt}` the prompt (with --prompt-transport arg); write "
+                "`--args=...` when the string starts with `-`",
+                {"required": True},
+            ),
+            Arg(("--model",), "a model name to pass as `{model}`; repeat it for more; the first is the default",
+                {"action": "append", "required": True, "metavar": "MODEL"}),
+            Arg(("--family",), "the model family, for fallback-chain placement (default: local_open_weight)",
+                {"choices": providers.FAMILIES, "default": "local_open_weight"}),
+            Arg(("--prompt-transport",), "how the prompt reaches the command (default: stdin)",
+                {"choices": providers.PROMPT_TRANSPORTS, "default": "stdin"}),
+            Arg(("--response-format",), "how the command prints its reply (default: text)",
+                {"choices": providers.RESPONSE_FORMATS, "default": "text"}),
+            Arg(("--auth-args",), "arguments of a sign-in check the runtime runs at start, as one "
+                "quoted string; it must exit 0 (default: no check); write `--auth-args=...` when "
+                "the string starts with `-`"),
+        ),
+        example=(
+            "arhugula provider add local_echo --command <home>/kit/examples/providers/echo-provider "
+            '--args="--model {model}" --auth-args=--version --model echo-1'
+        ),
+        detail=(
+            "The runtime runs it as its `generic-command` kind: the command, then the arguments, "
+            "with the prompt on standard input unless --prompt-transport is `arg`. `json` reads a "
+            "Claude-style result object; `jsonl` reads Codex-style events. The provider is enabled "
+            "at once and then behaves like a built-in one in `provider`, `routing` and `--provider`."
+        ),
+    ),
+    Verb(
+        ("provider", "remove"),
+        "Remove a provider added with `provider add`.",
+        "kit",
+        _provider_remove,
+        (Arg(("name",), "a provider added with `provider add`"),),
+        example="arhugula provider remove local_echo",
+        detail="The default and the fallback provider cannot be removed; change the chain first.",
     ),
     Verb(
         ("provider", "set"),
@@ -764,7 +1179,8 @@ VERBS: tuple[Verb, ...] = (
         _model_set,
         (
             Arg(("provider",), "an enabled provider"),
-            Arg(("model",), "the model name as the provider knows it"),
+            Arg(("model",), "one of its available models, as <model> or <model>@<level> "
+                            "(`arhugula provider models` lists them)"),
         ),
         example="arhugula routing model set ollama llama3.1:8b",
     ),

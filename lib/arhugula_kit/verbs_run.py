@@ -5,12 +5,17 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
+import time
+from collections.abc import Sequence
 from pathlib import Path
 
-from arhugula_kit import deploy, render, runtime, workflows
+from arhugula_kit import deploy, providers, render, runtime, servedby, workflows
 from arhugula_kit.common import PROJECT_ARG, exec_logged, harness_command, resolve_manifest, say, table, target_of
 from arhugula_kit.errors import Exit, KitError
+from arhugula_kit.spec import Spec
 from arhugula_kit.verbs import Arg, Verb
+from arhugula_kit.verbs_config import offers
 
 DECISIONS = ("approve", "edit", "reject", "respond")
 
@@ -20,13 +25,18 @@ def _run(args: argparse.Namespace) -> int:
     target = target_of(deployment, args.project)
     manifest = resolve_manifest(deployment, target, args.manifest)
     words: list[str | Path] = ["run", manifest, "--config", target.config_file]
+    spec = deployment.spec
     model = args.model
-    if args.provider and not model and args.provider in deployment.spec.providers:
-        # The runtime pairs `--provider` alone with the model named in the manifest, which
-        # belongs to another provider as often as not; the request then fails and the
-        # fallback chain quietly serves the run. "Use this provider" means with the model
-        # this deployment configured for it.
-        model = deployment.spec.model_of(args.provider)
+    if args.provider and args.provider in spec.providers:
+        provider = spec.provider(args.provider)
+        if model:
+            model = _note_unavailable(spec, provider, model)
+        else:
+            # The runtime pairs `--provider` alone with the model named in the manifest, which
+            # belongs to another provider as often as not; the request then fails and the
+            # fallback chain quietly serves the run. "Use this provider" means with the model
+            # this deployment configured for it.
+            model = spec.model_of(args.provider)
     for flag, value in (("--provider", args.provider), ("--model", model)):
         if value:
             words += [flag, value]
@@ -36,7 +46,39 @@ def _run(args: argparse.Namespace) -> int:
         from arhugula_kit import daemon
 
         words += ["--daemon", "--socket-path", daemon.socket_path(deployment.home, target)]
-    return _exec_harness(deployment, target, words, label="run")
+    started = time.time_ns()
+    code = _exec_harness(deployment, target, words, label="run")
+    if args.provider and not args.daemon:
+        line = servedby.after_run(deployment.home.span_store, started, args.provider, model or "")
+        if line:
+            _aside(line)
+    return code
+
+
+def _aside(text: str) -> None:
+    """A line about a run, on standard error: standard output is the runtime's (`--json`)."""
+    print(text, file=sys.stderr, flush=True)
+
+
+def _note_unavailable(spec: Spec, provider: providers.Provider, model: str) -> str:
+    """The model as the runtime is to get it: the tool's id, with any level.
+
+    Refuses a model the provider's own tool refuses; notes one this deployment did not make
+    available. A manifest may name any model, so an unavailable one is the operator's call,
+    not a refusal.
+    """
+    offered = offers(spec, provider)
+    try:
+        chosen = providers.resolve(provider, model, offered)
+    except providers.ModelRefused as refused:
+        raise KitError(Exit.USAGE, str(refused), fix=f"arhugula provider models {provider.name}") from None
+    available = spec.available(provider.name)
+    if providers.model_id(provider, chosen.ref, offered) not in providers.available_ids(provider, available, offered):
+        _aside(f"note: `{chosen.ref}` is not one of the models available for {provider.name} "
+               f"({', '.join(available)}); it is passed on as given"
+               f"{f' ({chosen.note})' if chosen.note else ''}. To make it available: "
+               f"{providers.enable_command(provider.name, [*available, chosen.ref])}")
+    return chosen.ref
 
 
 def _exec_harness(deployment: deploy.Deployment, target: render.Target, words: list[str | Path], *, label: str) -> int:
@@ -187,9 +229,31 @@ def _workflow_validate(args: argparse.Namespace) -> int:
             if facts["workload_class"] not in target.workloads:
                 say(f"  warning: {target.label} does not bind the workload class "
                     f"{facts['workload_class']}; a run would fail at bootstrap")
+            spec = deployment.spec
+            named = {step["binding"]["provider"] for step in facts["steps"]} & set(spec.providers)
+            lists = {name: offers(spec, spec.provider(name)) for name in named}
             for step in facts["steps"]:
-                say(f"  step:          {step['step_id']} ({step['step_kind']})")
+                binding = step["binding"]
+                say(f"  step:          {step['step_id']} ({step['step_kind']}), bound to "
+                    f"{binding['provider']}/{binding['model']}")
+                note = _binding_note(spec, binding["provider"], binding["model"], lists.get(binding["provider"], ()))
+                if note:
+                    say(f"    note: {note}")
+            say("  (a run is routed by the deployment's chain unless --provider is given; "
+                "`arhugula routing show`)")
     return Exit.OK
+
+
+def _binding_note(spec: Spec, name: str, model: str, offered: Sequence[providers.Offer]) -> str:
+    """What a manifest's binding names that this deployment does not have, in words."""
+    if name not in spec.providers:
+        return f"{name} is not an enabled provider here (enabled: {', '.join(spec.providers)})"
+    provider = spec.provider(name)
+    available = spec.available(name)
+    if providers.model_id(provider, model, offered) not in providers.available_ids(provider, available, offered):
+        return (f"`{model}` is not one of the models available for {name} ({', '.join(available)}); "
+                f"to make it available: {providers.enable_command(name, [*available, model])}")
+    return ""
 
 
 MANIFEST = Arg(("manifest",), "a manifest file, or its name in the project's workflows/ or upstream's examples/")

@@ -87,7 +87,7 @@
       "description": "Why do subscription CLI calls show no cost?",
       "options": {
         "mode": "markdown",
-        "content": "**Subscription CLI routes are never priced, by design.** Calls through `claude_code`, `codex`, `gemini` and `antigravity` have no rate-table row: their usage is kept as evidence (`external_cli.usage.*`) and no cost attribute is written. They therefore add nothing to any panel here. This is expected and does not mean the calls were free of charge under your subscription.\n\nLocal Ollama calls are priced at a rate of zero, so they appear with a cost of 0."
+        "content": "**Subscription CLI routes are never priced, by design.** Calls through `claude_code`, `codex` and `antigravity` have no rate-table row: their usage is kept as evidence (`external_cli.usage.*`) and no cost attribute is written. They therefore add nothing to any panel here. This is expected and does not mean the calls were free of charge under your subscription.\n\nLocal Ollama calls are priced at a rate of zero, so they appear with a cost of 0."
       },
       "id": 2,
       "gridPos": {

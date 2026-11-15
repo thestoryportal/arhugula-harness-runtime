@@ -42,7 +42,7 @@ None of them protects against a person or a program that already runs as your ma
 | Audit signing | Makes a forged entry need the signing key. | It does not protect a ledger if the key file is copied, and every program that runs as you can read that file. It does not show entries removed from the end. |
 | Approval gates | Ask you before a tool call that the workflow puts a gate in front of. | They do not cover a tool call that no gate names. They do not ask for calls the policy approves without asking. |
 | Isolation tier 3 | Runs a tool call in a gVisor container with no network, inside the virtual machine. | It does not sandbox provider calls or tier 1 tool calls. It does not sandbox the MCP server process, which still starts on the Mac. |
-| Provider-call isolation | Removes API keys from the environment. For Claude Code and Codex it also switches the provider's tools off. | It does not hide your home directory from the provider's program. It passes no flag that switches Gemini's tools off. |
+| Provider-call isolation | Removes API keys from the environment. For Claude Code and Codex it also switches the provider's tools off. | It does not hide your home directory from the provider's program. It passes no flag that switches Antigravity's tools off. |
 | Routing and the fallback chain | Choose which provider serves a step. | They are not a data boundary. A step that fails on its provider goes to the next provider of the chain with the same prompt. `--provider` only puts a provider in front of the whole chain. To keep every step on one provider, make it the chain's only entry: `arhugula routing chain set <binding> --fallback none`. See [Change the routing](providers.md#change-the-routing). |
 
 ## Keep secrets out of files
@@ -65,7 +65,7 @@ These rules hold for keys:
 
 - **No key in TOML.** The runtime's loader refuses a configuration file with a value under a key whose name ends in `api_key`, `secret`, `password`, `passphrase`, `token` or `credential`. It checks the name of the key and not the value, so it does not catch a secret under another name, such as a token inside a URL.
 - **An environment variable is a fallback.** When the keychain has no entry, the runtime reads `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` from the environment. Unset them if you want the keychain to be the only source.
-- **Subscription providers use no key.** Claude Code, Codex, Gemini and Antigravity each keep their own sign-in. The deployment never reads it.
+- **Subscription providers use no key.** Claude Code, Codex and Antigravity each keep their own sign-in. The deployment never reads it.
 - **An MCP credential lives in the keychain too.** `arhugula mcp add --auth-secret-name <entry>` names a keychain entry; the credential itself stays out of the configuration. The runtime sends the credential as a bearer token, and refuses the flag for a `stdio` client.
 
 No `arhugula` verb stores an MCP credential.
@@ -559,7 +559,7 @@ A `stdio` client then has no driver, and the runtime refuses its tool calls.
 ## How provider calls are isolated
 
 Each agent step is one short-lived call to a provider.
-For the four subscription providers the runtime starts the provider's own command-line program once per step.
+For the three subscription providers the runtime starts the provider's own command-line program once per step.
 It passes a reduced environment and a command line that runs the program in print mode, with no session.
 
 | Provider | Environment the program receives | Working directory | Command line |
@@ -567,7 +567,6 @@ It passes a reduced environment and a command line that runs the program in prin
 | `claude_code` | An allowlist only: `PATH`, `HOME`, user, locale, temporary directory, config directories, proxy and certificate variables. | A new empty directory, removed after the call. | `--print`, `--no-session-persistence`, `--safe-mode`, `--strict-mcp-config`, an empty `--tools` list, `--permission-mode dontAsk` |
 | `codex` | Your environment without five credential variables. | A new empty directory, removed after the call. | `exec --ephemeral --sandbox read-only --ignore-user-config`, with the shell, plugin, browser and web-search features disabled |
 | `antigravity` | Your environment without five credential variables. | The directory the runtime runs in. | `--print <prompt> --sandbox` |
-| `gemini` | Your environment without five credential variables. | The directory the runtime runs in. | `--skip-trust -m <model> -p <prompt>` |
 
 The five credential variables are `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY` and `GOOGLE_APPLICATION_CREDENTIALS`.
 Removing them keeps a subscription call from silently becoming a paid API call.
@@ -578,10 +577,10 @@ The runtime starts the program directly, with no shell, so a prompt cannot injec
 What this isolation does not do:
 
 - **It is not a sandbox.** The program runs as your user. Its restraint comes from its own flags, and the runtime trusts the program to honor them.
-- **It does not switch every provider's tools off.** Claude Code gets an empty tool list and Codex gets its tool features disabled. Antigravity gets `--sandbox` only. Gemini gets no flag that limits its tools.
+- **It does not switch every provider's tools off.** Claude Code gets an empty tool list and Codex gets its tool features disabled. Antigravity gets `--sandbox` only.
 - **It passes `HOME`.** The program needs its own sign-in, so it can reach your home directory.
-- **It removes five variables, not all secrets.** For Codex, Antigravity and Gemini every other variable of your environment passes through.
-- **It puts some prompts on the command line.** Antigravity and Gemini receive the prompt as an argument, which other programs of your user can see while the call runs.
+- **It removes five variables, not all secrets.** For Codex and Antigravity every other variable of your environment passes through.
+- **It puts some prompts on the command line.** Antigravity receives the prompt as an argument, which other programs of your user can see while the call runs.
 - **Codex is marked HELD upstream.** Its filesystem read exposure is an untested boundary (*upstream limit*).
 
 Hosted API providers and Ollama do not go through a command-line program, and this section does not describe them.

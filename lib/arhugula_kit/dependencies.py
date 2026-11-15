@@ -130,7 +130,7 @@ def _ollama(machine: Machine, home: Home) -> State:
     return State(False, "`ollama` is not on PATH")
 
 
-_OLLAMA_MODEL = providers.by_name("ollama").default_model
+_OLLAMA_MODEL = providers.by_name("ollama").suggested_model
 
 
 def _ollama_model(machine: Machine, home: Home) -> State:

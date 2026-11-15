@@ -1,0 +1,18 @@
+#!/bin/sh
+# A stand-in provider for `arhugula provider add`: it calls no model and no network.
+# It reads the prompt on standard input and prints one fixed, clearly marked reply, so a
+# run served by it is told apart from a real model's at a glance and in its span.
+#
+#   arhugula provider add local_echo --command <home>/kit/examples/providers/echo-provider \
+#     --args="--model {model}" --auth-args=--version --model echo-1
+#   arhugula run minimal.toml --provider local_echo
+model=unknown
+while [ $# -gt 0 ]; do
+  case $1 in
+    --version) echo "echo-provider 1 (stand-in; calls no model)"; exit 0 ;;
+    --model) shift; model=${1:-unknown} ;;
+  esac
+  shift
+done
+bytes=$(wc -c | tr -d ' ')
+echo "STAND-IN REPLY from echo-provider (model $model; no model was called; prompt of $bytes bytes received)"

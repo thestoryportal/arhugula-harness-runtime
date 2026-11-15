@@ -21,10 +21,23 @@ import os
 import subprocess
 import sys
 from dataclasses import replace
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from arhugula_kit import audit_keys, dependencies, deploy, detect, preflight, proc, questions, render, runtime, spec
+from arhugula_kit import (
+    audit_keys,
+    dependencies,
+    deploy,
+    detect,
+    preflight,
+    proc,
+    providers,
+    questions,
+    render,
+    runtime,
+    spec,
+)
 from arhugula_kit.detect import Machine
 from arhugula_kit.errors import Exit, KitError
 from arhugula_kit.layout import KIT_ROOT, Home
@@ -39,10 +52,31 @@ def say(text: str = "") -> None:
 
 
 def _existing_raw(home: Home) -> dict[str, Any]:
+    """The stored answers in the current shape, or nothing for a new deployment."""
     try:
-        return json.loads(home.spec_file.read_text(encoding="utf-8"))
+        return spec.migrate(json.loads(home.spec_file.read_text(encoding="utf-8")))
     except FileNotFoundError:
         return {}
+
+
+def _preset(existing: dict[str, Any], say: Callable[[str], None] = say) -> dict[str, Any]:
+    """The stored answers as defaults for asking again, without a provider the kit retired.
+
+    The questions are asked anew, so a retired provider is left out here and said so; a
+    default provider that was retired leaves question 3 to choose another.
+    """
+    retired = [name for name in existing.get("providers", ()) if name in providers.RETIRED]
+    document = dict(existing)
+    for name in retired:
+        say(f"note: `{name}` is no longer a provider ({providers.RETIRED[name]}); it is left out of the answers below.")
+        document = spec.without_provider(document, name)
+        if document.get("primary") == name:
+            document.pop("primary")
+    return document
+
+
+def _to_stderr(text: str) -> None:
+    print(text, file=sys.stderr, flush=True)
 
 
 def _interactive() -> bool:
@@ -97,6 +131,7 @@ def _answers(machine: Machine, args: argparse.Namespace, preset: dict[str, Any])
             )
         # The file answers the questions. Whatever else the deployment already carries
         # (attached projects, settings stored by verbs) stays, unless the file names it.
+        given = spec.migrate(given)
         return {**preset, **given, **questions.complete(machine, given)}
     if args.yes or not _interactive():
         if not args.yes:
@@ -113,7 +148,9 @@ def _asked(preset: dict[str, Any], asked: dict[str, Any]) -> dict[str, Any]:
     """Answers given at the prompts, over whatever the deployment already carried.
 
     Question 9 covers five features. One switched on with `arhugula feature enable` is
-    not on its list, so asking again must not switch it off.
+    not on its list, so asking again must not switch it off. (A provider added with
+    `provider add` has no letter at question 2; that question keeps it selected itself, so
+    questions 3 to 5 can choose it.)
     """
     offered = {name for _, name, _ in questions.FEATURE_LETTERS}
     kept = [name for name in preset.get("features", ()) if name not in offered]
@@ -292,6 +329,7 @@ def run_init(args: argparse.Namespace) -> int:
             kit_home,
             ollama_host=existing.get("ollama_host", detect.OLLAMA_DEFAULT_HOST),
             lima_home=(existing.get("observability") or {}).get("lima_home") or None,
+            added=spec.enabled_custom(existing),
         )
 
     # Standard error, so that `--questions-json` prints nothing but JSON on standard output.
@@ -302,7 +340,7 @@ def run_init(args: argparse.Namespace) -> int:
             json.dumps(
                 {
                     "dependencies": dependencies.as_json(machine, kit_home),
-                    "questions": questions.describe(machine, existing),
+                    "questions": questions.describe(machine, _preset(existing, say=_to_stderr)),
                 },
                 indent=2,
             )
@@ -321,7 +359,7 @@ def run_init(args: argparse.Namespace) -> int:
         say(f"\nThis deployment is already configured ({kit_home.spec_file}).")
         keep = _confirm("Keep its answers and only re-verify?")
     # A relocated deployment finds itself by where its kit now sits; the stored home is stale.
-    answers = {**existing, "home": str(kit_home.root)} if keep else _answers(machine, args, existing)
+    answers = {**existing, "home": str(kit_home.root)} if keep else _answers(machine, args, _preset(existing))
     # The one checkpoint for the answers, before anything is checked, installed or written.
     try:
         wanted = _spec_of(answers)

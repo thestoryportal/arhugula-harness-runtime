@@ -51,17 +51,19 @@ Three markers, always in italics, tell you how far to trust a statement:
 
 ### Providers
 
-- **Seven providers:** Claude Code, Codex, Gemini and Antigravity run through your own signed-in command-line tool. Ollama runs local models. The Anthropic API and the OpenAI API are paid, hosted services.
+- **Six providers:** Claude Code, Codex and Antigravity run through your own signed-in command-line tool. Ollama runs local models. The Anthropic API and the OpenAI API are paid, hosted services. You can also add a command of your own with `arhugula provider add` (*witnessed* with the stand-in `examples/providers/echo-provider`).
 - **Keys stay out of files:** `arhugula provider key set <name>` stores an API key in the macOS keychain. No key is written to a TOML file.
 - **One command checks sign-in:** `arhugula provider check` asks each enabled provider's own tool whether it is installed and signed in.
 - **Subscription calls carry no price:** a call through a signed-in command-line tool writes no cost entry (*upstream limit*, by design).
-- **Gemini refuses some accounts:** the Gemini CLI refuses individual Google accounts at this release and points to Antigravity.
+- **Models come from each tool's own list:** `arhugula provider models` shows what your sign-in offers. `provider check` and `doctor` report a model that a tool no longer offers.
+- **Codex serves a run at this pin:** three runs with `--provider codex` were each served by Codex, with no error (*witnessed*). When the provider you name fails, the fallback serves the step and the run prints a `served by` line.
 
 Details: [providers](docs/providers.md).
 
 ### Routing
 
 - **One routing rule:** the config's first fallback chain serves every step; `--provider` (and `--model`) override it for one run; a manifest's own model binding does not select the provider. A more specific setting wins over the chain: a per-step `model_binding` in a manifest, a workload override or a role binding. See [How routing picks a provider](docs/providers.md#how-routing-picks-a-provider).
+- **A model and a thinking level, where you want them:** one table gives the exact command or manifest line. It covers one step or sub-agent, one role, one kind of work, the default and one run. See [Choose a model and a thinking level](docs/providers.md#choose-a-model-and-a-thinking-level). Claude Code and Codex take a level as `<model>@<level>`, for example `sonnet@high` (*kit extension*).
 - **A fallback provider:** when the default provider fails, the chain's fallback provider takes the step.
 - **Finer routing by verb:** `arhugula routing` sets the chain, a provider's model, a binding for a role or a workload class, and retry policies.
 
@@ -71,7 +73,7 @@ Details: [providers](docs/providers.md) and [configure](docs/configure.md).
 
 - **Six topologies ship:** single-threaded-linear, parallelization, orchestrator-workers, evaluator-optimizer, hierarchical-delegation and decentralized-handoff. Upstream has an example of each, and `arhugula workflow list` shows them.
 - **A manifest from a topology:** `arhugula workflow new <topology> --name <name>` writes a manifest that loads in the runtime (*kit extension*).
-- **Isolated agent steps:** each agent step is one short provider call. It has no session and a scrubbed environment. With Claude Code and Codex it also has no tools of its own. Gemini and Antigravity keep their own tools and start in the project's repository: see [What each call can see](docs/providers.md#what-each-call-can-see).
+- **Isolated agent steps:** each agent step is one short provider call. It has no session and a scrubbed environment. With Claude Code and Codex it also has no tools of its own. Antigravity keeps its own tools and starts in the project's repository: see [What each call can see](docs/providers.md#what-each-call-can-see).
 - **One process, no multiplexer:** the agents of a topology run concurrently inside one process. No terminal multiplexer is involved.
 - **No plans from replies:** the runtime does not build a worker plan from a lead model's reply (*upstream limit*; upstream issue: see known-gaps).
 
@@ -170,7 +172,7 @@ Details: [security and isolation](docs/security-and-isolation.md).
 You need a Mac and a terminal. Assume nothing else is installed: init checks every item and guides you through each missing one.
 
 - **Always:** macOS 13 or later, the Xcode Command Line Tools, git, uv, and CPython 3.12 managed by uv.
-- **At least one provider:** Ollama with a pulled model, or a signed-in Claude Code, Codex, Gemini or Antigravity command-line tool.
+- **At least one provider:** Ollama with a pulled model, or a signed-in Claude Code, Codex or Antigravity command-line tool.
 - **For the trace stack and tier 3:** Lima.
 - **Optional:** Homebrew, the suggested way to install the others.
 - **Disk space:** about 3 GiB, or 12 GiB with the VM.
@@ -216,7 +218,7 @@ The first install takes longer than a later one, because it downloads these part
 
 - **The harness source:** a clone of the upstream repository.
 - **The Python dependencies:** the packages of the harness.
-- **The Ollama model:** about 2 GB, when you use Ollama with its default model.
+- **The Ollama model:** about 2 GB, when you use Ollama with the model that init proposes.
 - **The VM:** 5 to 10 minutes the first time, when you answer `kit` at question 11. `kit` is the default when Lima is installed. Init creates that VM only when 12 GiB are free.
 
 With every download in the cache, the install itself takes about a minute.

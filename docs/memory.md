@@ -51,7 +51,7 @@ The runtime picks one access mode for each model call, in this priority order:
 4. **No memory access.** This applies when policy or capability denies every other mode.
 
 The runtime selects memory tools for `openai` and `ollama` only.
-A command-line provider (`claude_code`, `codex`, `gemini`, `antigravity`) sends text only, so its calls get the prompt packet.
+A command-line provider (`claude_code`, `codex`, `antigravity`) sends text only, so its calls get the prompt packet.
 Calls to `anthropic` get the prompt packet too.
 This is read in the runtime's code, in `harness-cp/src/harness_cp/memory_access_mode.py`. A model's call of a memory tool was not witnessed for each provider.
 

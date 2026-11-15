@@ -62,7 +62,6 @@ It comes from the arguments in `upstream/harness-runtime/src/harness_runtime/lif
 | --- | --- | --- |
 | `claude_code` | `--print --no-session-persistence --safe-mode --strict-mcp-config --tools ""`, with the prompt on standard input | A new empty directory, removed after the call |
 | `codex` | `exec --ephemeral --sandbox read-only --ignore-user-config`, with its tool features switched off and the prompt on standard input | A new empty directory, removed after the call |
-| `gemini` | `--skip-trust -m <model> -p <prompt>` | The project repository |
 | `antigravity` | `--print <prompt> --model <model> --print-timeout <duration> --sandbox` | The project repository |
 | `ollama`, `anthropic`, `openai` | One API request that carries the messages | None: no file is read |
 
@@ -70,9 +69,9 @@ The runtime also reduces the environment of each command-line call.
 Claude Code receives a short fixed list of variables, such as `PATH` and `HOME`.
 The other command-line providers receive your environment without the provider API keys.
 
-The runtime passes no context file to the Gemini CLI or to Antigravity.
-Those two calls start in the project repository, because the runtime does not move them.
-The kit has not tested whether either program reads a file from that directory by itself.
+The runtime passes no context file to Antigravity.
+That call starts in the project repository, because the runtime does not move it.
+The kit has not tested whether the program reads a file from that directory by itself.
 
 So write everything an agent must know into the manifest's messages, a prompt version or a skill.
 Your `CLAUDE.md` and `AGENTS.md` files still guide an agent CLI that you run yourself in the project: see [Work with agent CLIs](agents.md).
@@ -115,11 +114,11 @@ Use this table to choose the shape of `params`.
 | --- | --- | --- |
 | Hosted API | `anthropic`, `openai` | `{ max_tokens = <number> }`. The Anthropic API requires `max_tokens`. |
 | Ollama | `ollama` | `{ options = { num_predict = <number> } }`. The keys go to Ollama's chat call. |
-| Command-line | `claude_code`, `codex`, `gemini`, `antigravity` | Not used: the call sends text only. Keep `tools = []`, because the runtime refuses a command-line step that lists tools. |
+| Command-line | `claude_code`, `codex`, `antigravity` | Not used: the call sends text only. Keep `tools = []`, because the runtime refuses a command-line step that lists tools. |
 
 Four rules decide which shape you need:
 
-- **Routing rule:** the config's first fallback chain serves every step; `--provider` (and `--model`) override it for one run; a manifest's own model binding does not select the provider. A more specific setting wins over the chain: a per-step `model_binding`, a workload override or a role binding. See [How routing picks a provider](providers.md#how-routing-picks-a-provider).
+- **Routing rule:** the config's first fallback chain serves every step; `--provider` (and `--model`) override it for one run; a manifest's own model binding does not select the provider. A more specific setting wins over the chain: a per-step `model_binding`, a workload override or a role binding. See [How routing picks a provider](providers.md#how-routing-picks-a-provider). To choose a model and a thinking level for one step, role, workload class, the default or one run, see [Choose a model and a thinking level](providers.md#choose-a-model-and-a-thinking-level).
 - **Write for that provider:** run `arhugula routing show` to see the chain, then write `params` for the family at its head.
 - **Another family can serve the step:** the fallback provider, or a more specific binding, can be of another family. The runtime passes `params` unchanged to whichever provider serves the step. A hosted API and Ollama take its keys as arguments of their call, and a command-line call does not read them. What a provider does with another family's keys was not run.
 - **Keep one system prompt:** when a prompt version is active, leave the system prompt out of the payload. The runtime fails the step with `RT-FAIL-PROMPT-INJECTION-CONFLICT` when it finds two.

@@ -29,12 +29,12 @@ That is the multi-agent execution model:
 
 - **One process runs everything.** `arhugula run` starts the runtime once. The runtime's workflow driver runs every step, in the order the topology sets.
 - **Branches run at the same time.** Parallel branches, an orchestrator's workers and a hierarchy's children run concurrently inside that one process.
-- **Each agent step is one isolated provider call.** The call is short-lived. A command-line provider gets no session and a scrubbed environment. Claude Code and Codex also get no tools of their own; Gemini and Antigravity keep theirs and start in the project's repository: see [What each call can see](providers.md#what-each-call-can-see). The [providers page](providers.md#how-the-runtime-calls-a-command-line-provider) shows the exact command lines.
+- **Each agent step is one isolated provider call.** The call is short-lived. A command-line provider gets no session and a scrubbed environment. Claude Code and Codex also get no tools of their own; Antigravity keeps its own and starts in the project's repository: see [What each call can see](providers.md#what-each-call-can-see). The [providers page](providers.md#how-the-runtime-calls-a-command-line-provider) shows the exact command lines.
 - **No terminal multiplexer is involved.** The harness opens no panes and no windows. You watch one command in one terminal.
 - **A reviewer is a role in a topology.** The evaluator of an evaluator-optimizer workflow reviews the generator. The synthesis step of an orchestrator-workers workflow combines the workers. To review with another model, route that step: see [Review with a second model](providers.md#review-with-a-second-model).
 
 Agents change nothing in the world by themselves, with one exception.
-A step that Gemini or Antigravity serves, as the default or as the fallback, runs that tool with its own tools on, and no gate covers them (*upstream limit*).
+A step that Antigravity serves, as the default or as the fallback, runs that tool with its own tools on, and no gate covers them (*upstream limit*).
 Every other step acts only through the harness: a tool step calls a tool server, and an approval gate can stand in front of that call.
 
 ```mermaid
@@ -121,6 +121,11 @@ The config's first fallback chain serves every step; `--provider` (and `--model`
 A more specific setting wins over the chain: a per-step `model_binding`, described below, a workload override or a role binding.
 The [providers page](providers.md#how-routing-picks-a-provider) explains the rule and that order.
 
+To choose a model for one step or sub-agent, write its `model_binding` here.
+Other places exist: [Choose a model and a thinking level](providers.md#choose-a-model-and-a-thinking-level) lists them with the exact command or manifest line.
+
+`arhugula workflow validate` prints each step's binding and a note when its provider is not enabled.
+
 The loader accepts five more optional fields in this table: `entry_version`, `default_gate_level`, `fanout_timeout_disposition`, `concurrent_cache_warmup` and `sub_agent_briefs`.
 No upstream example sets them.
 
@@ -139,6 +144,10 @@ All other fields are optional.
 | `removed_placements` | approval gates that the step drops; only `sub-agent-boundary` can be dropped |
 
 A `model_binding` here is the one manifest setting that does select a provider.
+
+The example `examples/workflows/two-agents.toml` binds step one to `claude_code` with `haiku@low` and step two to `codex` with `gpt-6.1-sol@medium`.
+A run of it completed, and its two model-call spans named exactly those models (*witnessed*).
+[Choose a model and a thinking level](providers.md#choose-a-model-and-a-thinking-level) shows how to make the models available first.
 
 ### The `[default_model_binding]` table
 
@@ -170,6 +179,8 @@ No upstream example uses them.
 
 In an inference step, `params` has the shape that the provider reads.
 Ollama reads `options.num_predict` for the reply length; the other providers read `max_tokens`.
+Every inference step needs a `params` table, even an empty one (`params = {}`).
+Without it the workflow loads and `workflow validate` passes, but the run fails with `RT-FAIL-PAYLOAD-SHAPE ... params Field required` (*witnessed*).
 
 ## Choose one of the six topologies
 
@@ -511,6 +522,7 @@ Kit modules and files:
 - `lib/arhugula_kit/verbs_config.py`
 - `fragments/data-flow.toml`
 - `examples/workflows/gated-tool.toml`
+- `examples/workflows/two-agents.toml`
 - `examples/mcp/notes_server.py`
 
 Upstream sources, relative to the home:

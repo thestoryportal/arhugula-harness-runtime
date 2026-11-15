@@ -19,7 +19,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from arhugula_kit import dependencies, detect, lima, providers, runtime, vm
+from arhugula_kit import dependencies, detect, lima, providers, runtime, spec, vm
 from arhugula_kit.detect import Machine
 from arhugula_kit.errors import Exit, KitError
 from arhugula_kit.layout import KIT_ROOT, STACK_PORTS, Home
@@ -83,6 +83,15 @@ class Subject:
     @property
     def features(self) -> tuple[str, ...]:
         return tuple(self.answers["features"])
+
+    @property
+    def models(self) -> Mapping[str, tuple[str, ...]]:
+        """Each provider's available models; an answers file of an older format is read too."""
+        stored = spec.migrate(self.answers).get("models", {})
+        return {name: tuple(listed) for name, listed in stored.items()}
+
+    def provider(self, name: str) -> providers.Provider:
+        return spec.lookup(self.answers)[name]
 
     @property
     def engine(self) -> str:
@@ -189,42 +198,57 @@ def _p5(s: Subject) -> Finding:
     return _ok("a plain directory, outside every git checkout")
 
 
+def _worst(*levels: Level) -> Level:
+    return next((level for level in (Level.FAIL, Level.WARN) if level in levels), Level.OK)
+
+
 def _p6(s: Subject) -> Finding:
     problems: list[str] = []
     fixes: list[str] = []
     level = Level.OK
     for name in s.selected:
-        provider = providers.by_name(name)
+        provider = s.provider(name)
         if provider.access is not providers.Access.CLI:
             continue
         state = s.machine.state_of(name)
+        available = s.models.get(name, ())
+        stale = providers.refusals(provider, available, state.models)
+        if stale:
+            # A run on the default model would fail and be served by the fallback, which
+            # looks like success; for a provider the routing depends on, that is a failure.
+            default_stale = bool(available) and stale[0][0] == available[0]
+            level = _worst(level, Level.FAIL if name in s.required and default_stale else Level.WARN)
+            problems += [reason for _, reason in stale]
+            fixes.append(providers.repair_command(provider, available, state.models))
         if state.status is providers.Status.READY:
             continue
         severity = Level.FAIL if name in s.required and not state.usable else Level.WARN
-        level = Level.FAIL if Level.FAIL in (level, severity) else Level.WARN
+        level = _worst(level, severity)
         problems.append(f"{provider.title}: {state.status.value} ({state.detail})")
         fixes.append(state.fix or provider.caveat)
     if level is Level.OK:
-        return _ok("every selected CLI provider is installed and signed in")
+        return _ok("every selected CLI provider is installed, signed in and offers the models named for it")
     return Finding(level, "; ".join(problems), fix="; ".join(f for f in fixes if f))
 
 
 def _p7(s: Subject) -> Finding:
     if "ollama" not in s.selected:
         return _skip("Ollama is not selected")
-    host, model = s.answers["ollama_host"], s.answers["ollama_model"]
+    host = s.answers["ollama_host"]
+    wanted = s.models.get("ollama", ())
     models = providers.ollama_models(host)
     severity = Level.FAIL if "ollama" in s.required else Level.WARN
     if models is None:
         return Finding(severity, f"no answer from Ollama at {host}", fix="ollama serve")
-    if model not in models:
+    missing = [model for model in wanted if model not in models]
+    if missing:
         return Finding(
-            severity,
-            f"Ollama answers at {host} but the model {model} is not pulled",
-            fix=f"ollama pull {model}",
-            offer=("ollama", "pull", model),
+            severity if wanted[0] in missing else Level.WARN,
+            f"Ollama answers at {host} but these models named for it are not pulled: {', '.join(missing)}",
+            fix="; ".join(f"ollama pull {model}" for model in missing),
+            offer=("ollama", "pull", missing[0]),
         )
-    return _ok(f"Ollama answers at {host}; {model} is pulled")
+    return _ok(f"Ollama answers at {host}; {', '.join(wanted)} pulled")
 
 
 def _nearest_existing(path: Path) -> Path:
@@ -525,11 +549,14 @@ CHECKS: tuple[Check, ...] = (
     Check("P5", "the home is outside every git checkout", Stage.MACHINE, _p5,
           "the home is inside a git checkout, or holds a checkout other than `kit` and `upstream`",
           "choose a plain directory outside every git checkout"),
-    Check("P6", "each selected CLI provider is installed and signed in", Stage.MACHINE, _p6,
-          "the default or fallback provider's CLI is missing or signed out (any other selected one is a warning)",
-          "install the CLI and sign in with its own command; `arhugula provider check` shows each"),
-    Check("P7", "Ollama answers and has the model", Stage.MACHINE, _p7,
-          "Ollama does not answer, or the chosen model is not pulled, and the routing depends on Ollama",
+    Check("P6", "each selected CLI provider is installed, signed in and offers its models", Stage.MACHINE, _p6,
+          "the default or fallback provider's CLI is missing or signed out, or its sign-in no longer "
+          "offers its default model (any other selected provider, or another of its models, is a warning)",
+          "install the CLI and sign in with its own command; for a model it no longer offers, the "
+          "`arhugula provider enable` line the check prints, or answer question 5 again "
+          "(`init --reconfigure`); `arhugula provider check` shows each"),
+    Check("P7", "Ollama answers and has the models", Stage.MACHINE, _p7,
+          "Ollama does not answer, or the default Ollama model is not pulled, and the routing depends on Ollama",
           "`ollama serve`; `ollama pull <model>` (init offers to run it)", "Ollama is selected"),
     Check("P8", "the state root can be created safely", Stage.MACHINE, _p8,
           "`<home>/state` holds files the runtime did not stamp, is not yours with mode 0700, or its parent is writable by others",

@@ -34,7 +34,7 @@ arhugula run <manifest> [--project <project>] [--provider <name>] [--model <name
 | --- | --- |
 | `--project <project>` | Runs against that attached project. Without it, the run uses the current project. The name `default` means the deployment's own default config. |
 | `--provider <name>` | Sends every step to that enabled provider, for this run only. Without `--model`, the run uses the model that the deployment configured for that provider. |
-| `--model <name>` | Sends every step to that model, for this run only. |
+| `--model <name>` | Sends every step to that model, for this run only. The kit checks it against the provider's own list and refuses a model that the sign-in does not offer. For Claude Code and Codex it can carry a thinking level, as `<model>@<level>`. [Choose a model and a thinking level](providers.md#choose-a-model-and-a-thinking-level) lists every place to choose one. |
 | `--daemon` | Sends the run to the running daemon. See [Run workflows through the daemon](#run-workflows-through-the-daemon). |
 | `--json` | Prints the full result as JSON, with each step's reply. |
 
@@ -71,9 +71,16 @@ ledger:    042bb28f065c0f886b1a7bb4c33f0ed805e7543174ae7cd6b2accb80cab2fe58
 
 - **`override:`** appears only with `--provider` or `--model`. It names where every step goes first. A provider that fails still falls back along the config's chain.
 - **`status:`** is `completed`, `failed`, `paused`, `drained` or `partial`. `drained` means that the run limit ended the run. `partial` means that a fan-out run finished although at least one branch failed.
+- **`served by`** is an extra line after `ledger:`. It appears only when the provider you named with `--provider` failed and the fallback served the step. It names the provider and model that served, and why the named one failed. The `served by` line goes to standard error, as does a `note:` line such as the one for a model that the provider's list does not include. So `--json` output stays clean:
+
+  ```text
+  served by claude_code/sonnet, not by ollama/no-such-model:1b: ollama failed (TypeError: AsyncClient.chat() got an unexpected keyword argument 'max_tokens')
+  ```
+
+  *witnessed*. The status is still `completed`, so read this line before you trust that the provider you named answered. [Another provider served a run that names a provider](troubleshooting.md#another-provider-served-a-run-that-names-a-provider) explains this example.
 - **`ledger:`** is the hash of the newest audit entry in the project's state ledger after the run. An audit entry is one whose action id starts with `audit:`. This hash is not the `head_hash` that `arhugula status` shows, which belongs to the newest entry of any kind.
 
-A subscription CLI provider (`claude_code`, `codex`, `gemini`, `antigravity`) is never priced. So a run on one writes no cost entry (*upstream limit*, by design).
+A subscription CLI provider (`claude_code`, `codex`, `antigravity`) is never priced. So a run on one writes no cost entry (*upstream limit*, by design).
 It writes no audit entry either, so its `ledger:` hash is the same as before the run.
 Its step entries are still written, and `arhugula status` shows them (*witnessed*).
 Upstream issue #1743 covers the missing cost and audit entries.

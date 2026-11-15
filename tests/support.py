@@ -9,10 +9,31 @@ from arhugula_kit import providers
 from arhugula_kit.detect import Machine
 
 
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def fixture(name: str) -> str:
+    return (FIXTURES / name).read_text(encoding="utf-8")
+
+
+def offered() -> dict[str, tuple[providers.Offer, ...]]:
+    """What each provider's own tool lists, from text in the shape the tools print."""
+    return {
+        "codex": providers.parse_codex_models(fixture("codex-debug-models.json")),
+        "antigravity": providers.parse_antigravity_models(fixture("agy-models.txt")),
+        "ollama": (providers.Offer("llama3.2:3b"), providers.Offer("qwen3:8b")),
+    }
+
+
 def machine(**changes: Any) -> Machine:
     """A Mac with everything in place; pass a field to break it."""
+    lists = offered()
     states = tuple(
-        providers.ProviderState(provider, providers.Status.READY, "ready (fixture)", Path("/fixture/bin") / (provider.command or provider.name))
+        providers.ProviderState(
+            provider, providers.Status.READY, "ready (fixture)",
+            Path("/fixture/bin") / (provider.command or provider.name),
+            models=lists.get(provider.name, ()),
+        )
         for provider in providers.CATALOGUE
     )
     base: dict[str, Any] = dict(
@@ -31,7 +52,7 @@ def machine(**changes: Any) -> Machine:
         kit_engine=None,
         provider_states=states,
         ollama_host="http://127.0.0.1:11434",
-        ollama_models=("llama3.2:3b",),
+        ollama_models=("llama3.2:3b", "qwen3:8b"),
         lima_instances=(),
         time_machine_destinations=(),
     )
@@ -44,7 +65,7 @@ def answers(home: Path, **changes: Any) -> dict[str, Any]:
         "providers": ["claude_code", "ollama"],
         "primary": "claude_code",
         "fallback": "ollama",
-        "ollama_model": "llama3.2:3b",
+        "models": {"claude_code": ["sonnet"], "ollama": ["llama3.2:3b"]},
         "ollama_host": "http://127.0.0.1:11434",
         "project": "",
         "workloads": ["pipeline-automation", "software-engineering", "research", "content-creation"],

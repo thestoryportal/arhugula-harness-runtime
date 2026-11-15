@@ -114,8 +114,10 @@ uv venv --quiet --python $PYTHON_VERSION --no-project $ENV > $LOGS/install-env.l
 VIRTUAL_ENV=$ENV uv pip install --python $ENV/bin/python --require-hashes --no-deps \
     -r $DIST/requirements.lock.embedding.txt >> $LOGS/install-env.log 2>&1 \
   || { tail -5 $LOGS/install-env.log >&2; restore 77 "dependency install failed (log: $LOGS/install-env.log)" }
-VIRTUAL_ENV=$ENV uv pip install --python $ENV/bin/python --no-deps --no-index --find-links $DIST \
-    $PACKAGES >> $LOGS/install-env.log 2>&1 \
+# --no-cache: every harness wheel carries the version 0.0.0, so uv's cache cannot tell one
+# commit's build from another's and would install the earlier commit's files.
+VIRTUAL_ENV=$ENV uv pip install --python $ENV/bin/python --no-deps --no-index --no-cache \
+    --find-links $DIST $PACKAGES >> $LOGS/install-env.log 2>&1 \
   || { tail -5 $LOGS/install-env.log >&2; restore 77 "harness wheel install failed (log: $LOGS/install-env.log)" }
 
 step "verify"
@@ -126,6 +128,26 @@ env = pathlib.Path(sys.argv[1]).resolve()
 here = pathlib.Path(harness_runtime.__file__).resolve()
 assert env in here.parents, f"harness_runtime is imported from {here}, outside {env}"
 assert pathlib.Path(sys.prefix).resolve() == env, sys.prefix
+PY
+# The environment must hold the files of the wheels just built, not an earlier build's: each
+# wheel lists the hash of every file it carries, and the installed copy must hash the same.
+$ENV/bin/python - $DIST <<'PY' || restore 78 "the environment does not hold the harness wheels just built in $DIST"
+import base64, csv, hashlib, io, pathlib, sys, sysconfig, zipfile
+site = pathlib.Path(sysconfig.get_paths()["purelib"])
+stale = []
+for wheel in sorted(pathlib.Path(sys.argv[1]).glob("harness_*.whl")):
+    with zipfile.ZipFile(wheel) as archive:
+        record = next(name for name in archive.namelist() if name.endswith(".dist-info/RECORD"))
+        rows = list(csv.reader(io.StringIO(archive.read(record).decode())))
+    for name, digest, _size in rows:
+        if not digest.startswith("sha256=") or not name.endswith(".py"):
+            continue
+        installed = site / name
+        found = base64.urlsafe_b64encode(hashlib.sha256(installed.read_bytes()).digest()).rstrip(b"=").decode() if installed.is_file() else "missing"
+        if found != digest.removeprefix("sha256="):
+            stale.append(f"{wheel.name}: {name}")
+if stale:
+    sys.exit("these installed files differ from the wheels just built:\n  " + "\n  ".join(stale[:5]))
 PY
 for script in harness harness-inspect harness-shutdown; do
   [[ -x $ENV/bin/$script ]] || restore 78 "$ENV/bin/$script is missing"

@@ -12,7 +12,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from arhugula_kit import providers, toml_out
+from arhugula_kit import toml_out
 from arhugula_kit.errors import Exit, KitError
 from arhugula_kit.layout import Home
 from arhugula_kit.spec import Spec
@@ -76,16 +76,20 @@ def derive(home: Home, spec: Spec, topology: str, name: str) -> str:
             f"unknown topology {topology!r} (known: {', '.join(TOPOLOGY_EXAMPLES)})",
         ) from None
     document = tomllib.loads(source.read_text(encoding="utf-8"))
-    provider = providers.by_name(spec.primary)
+    provider = spec.provider(spec.primary)
     binding = {"provider": provider.name, "model": spec.model_of(provider.name), "family": provider.family}
     document = _retarget(document, binding, provider.family)
     document["workflow"]["workflow_id"] = name
+    available = "\n".join(f"  {p}: {', '.join(spec.available(p))}" for p in spec.providers)
     header = (
         f"Workflow manifest `{name}`: {topology}.\n"
         f"Derived by `arhugula workflow new` from upstream's examples/{source.name} at the\n"
         "installed pin. Edit the steps and their prompts; keep the field names.\n"
         "Which provider serves a step is decided by the deployment's routing, not by the\n"
         "bindings written here: see `arhugula routing show`.\n"
+        "The models this deployment makes available (first = default; `@level` = thinking level):\n"
+        f"{available}\n"
+        "Thinking for Ollama and the hosted APIs is set per step, in the step's `params`.\n"
         "Check your edits without calling any provider: arhugula workflow validate <file>"
     )
     return toml_out.dumps(document, header=header)

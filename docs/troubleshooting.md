@@ -409,7 +409,7 @@ arhugula: another `arhugula` command is changing this deployment's configuration
 ### A provider CLI is signed out
 
 ```text
-  FAIL  P6  each selected CLI provider is installed and signed in: Claude Code CLI: not-signed-in (<version>; `claude auth status` reports not signed in)
+  FAIL  P6  each selected CLI provider is installed, signed in and offers its models: Claude Code CLI: not-signed-in (<version>; `claude auth status` reports not signed in)
           fix: run `claude` once and sign in
 ```
 
@@ -418,19 +418,39 @@ arhugula: another `arhugula` command is changing this deployment's configuration
 - **Prevent:** `arhugula provider check`.
 - **Status:** the failed check is *witnessed* in `doctor --self-test`, with a simulated sign-out. The text in parentheses was read in the code; the self-test prints `signed out (simulated)` there.
 
-### The Gemini CLI refuses an individual Google account
+### Another provider served a run that names a provider
 
-`doctor` and `provider check` print this note for the `gemini` provider:
+A run with `--provider <name>` ends in `status: completed`, and it prints one more line after `ledger:`.
+The line goes to standard error, so `--json` output stays clean (*witnessed*):
 
 ```text
-  warn  P6  each selected CLI provider is installed and signed in: Gemini CLI: unverified (0.66.0; this CLI offers no sign-in check, so the first run is the check); ...
-          fix: The Gemini CLI refuses individual Google accounts at this release and points to Antigravity. The runtime dispatches correctly; the CLI itself declines.
+served by claude_code/sonnet, not by ollama/no-such-model:1b: ollama failed (TypeError: AsyncClient.chat() got an unexpected keyword argument 'max_tokens')
 ```
 
-- **Cause:** the Gemini CLI itself declines an individual Google account and points to Antigravity. The kit cannot check the sign-in ahead of time, so the first run is the check. The note is a warning, not a finding about your account: the kit prints it for every deployment that enables `gemini`. With an account that the CLI accepts, nothing needs fixing. This limit is external to the kit and to the harness.
-- **Fix:** if a run through `gemini` fails for this reason, use the `antigravity` provider instead. Enable it with `arhugula provider enable antigravity`, and put it in the chain with `arhugula routing chain set`.
-- **Prevent:** keep `gemini` out of the default and fallback positions. `arhugula routing show` prints the chain.
-- **Status:** the note is *witnessed* in `doctor.txt`. The gap is listed in [known gaps](reference/known-gaps.md).
+- **Cause:** the provider you named failed, and the fallback served the step. Read the text after `failed (` to see why.
+- **Fix:** repair the provider that failed, then run again. `arhugula provider check` shows each provider's sign-in and models.
+- **Prevent:** read the `served by` line of every run that names a provider with `--provider`. A run with no such line was served by the provider you named.
+- **Older pin:** a deployment installed before pin `2e1ba1f7` refuses Codex's start-up notice "Code Mode is unavailable because code-mode host is disabled" as an unrecognised item. The fallback then serves every Codex run. Run `arhugula upgrade`.
+- **Status:** *witnessed* in a run on the development deployment.
+
+### A stored model is no longer offered
+
+`arhugula provider check` and `doctor` print the models you made available, and the models the tool no longer offers:
+
+```text
+codex (enabled): ready
+    codex-cli 0.169.0; Logged in using ChatGPT
+    models: gpt-6.1-sol@low, gpt-5 (default gpt-6.1-sol@low)
+    not offered: Codex CLI: this sign-in does not offer the model `gpt-5`. It offers: gpt-6.1-sol, gpt-6-astra, gpt-6.1-terra, gpt-6-sol, gpt-6-luna, gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna
+    fix: arhugula provider enable codex --model gpt-6.1-sol@low
+arhugula: 2 model(s) named here are not offered by the provider's own tool
+  fix: follow the `fix:` lines above, or `arhugula routing chain set <provider>`
+```
+
+- **Cause:** model names change with the release of a tool and with your account, and a name you stored earlier is gone. The kit never replaces such a model silently. Check P6 of `doctor` warns for it, and fails when the default or fallback provider's default model is gone.
+- **Fix:** run the `fix:` line. It makes the models you name available, and the first is the default. `arhugula provider models <name>` lists what the sign-in offers.
+- **Prevent:** `arhugula provider check` after a tool updates.
+- **Status:** *witnessed* on the development deployment, with a hand-edited answers file.
 
 ### Codex is signed in with an API key (a paid route)
 
@@ -646,6 +666,18 @@ arhugula: there is no complete earlier environment at <home>/env.rollback to ret
 - **Fix:** name the commit that you want: `arhugula upgrade --pin <sha>`.
 - **Prevent:** `cat <home>/env.rollback/.arhugula-pin` prints the commit that a rollback returns to. When that file is missing, there is nothing to return to.
 - **Status:** read in the code; not witnessed.
+
+### `the environment does not hold the harness wheels just built`
+
+```text
+install: the environment does not hold the harness wheels just built in <home>/dist
+install: the earlier environment is back in place at <home>/env
+```
+
+- **Cause:** the install compared the hash of every installed harness file with the wheel it had just built, and a file differed. The install ends with exit code 78. The lines above the message name up to five files that differ.
+- **Fix:** the earlier environment is back in place, so runs work as before. Read `<home>/logs/install-env.log`, then run `arhugula upgrade --reinstall`. If it stops again, report the file names that the install printed.
+- **Prevent:** after an upgrade by an earlier kit version, run `arhugula upgrade --reinstall` once: that version could install the earlier commit's files. [Rebuild at the same pin](upgrade.md#rebuild-at-the-same-pin) explains why.
+- **Status:** read in the code (`bin/install.sh`); the mismatch itself was not provoked. The cause that this check closes, an upgrade that left the old code in the environment, was *witnessed*.
 
 ## Sources
 

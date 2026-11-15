@@ -71,7 +71,7 @@
       "description": "Explains what this dashboard or section shows.",
       "options": {
         "mode": "markdown",
-        "content": "**Answers:** how many LLM calls ran, how fast, on which provider and model, how many tokens they used, and which calls failed.\n\n**Data comes from:** every workflow step that dispatches to a model. Each dispatch writes one `chat <model>` span. Runs on any provider produce data; token counts appear only for API-metered providers and Ollama, while subscription CLI routes (`claude_code`, `codex`, `gemini`, `antigravity`) report tokens as `external_cli.usage.*` evidence instead.\n\nThe stack keeps traces for 24 hours, so no panel can look further back than that."
+        "content": "**Answers:** how many LLM calls ran, how fast, on which provider and model, how many tokens they used, and which calls failed.\n\n**Data comes from:** every workflow step that dispatches to a model. Each dispatch writes one `chat <model>` span. Runs on any provider produce data; token counts appear only for API-metered providers and Ollama, while subscription CLI routes (`claude_code`, `codex`, `antigravity`) report tokens as `external_cli.usage.*` evidence instead.\n\nThe stack keeps traces for 24 hours, so no panel can look further back than that."
       },
       "id": 1,
       "gridPos": {

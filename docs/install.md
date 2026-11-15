@@ -205,27 +205,7 @@ Runs workflow steps through your own signed-in `codex`.
 
   Sign in by running `codex login`. Upstream marks the Codex profile HELD: the CLI's filesystem read exposure is an untested boundary. Sign in with `codex login` to use your ChatGPT subscription; an API key makes every call a paid call. Init does not propose Codex as the default provider when you selected another one.
 
-### D12: Gemini CLI
-
-Runs workflow steps through your own signed-in `gemini`.
-
-- Needed for: the provider `gemini` (optional).
-- Check: `gemini --version`
-- Set it up:
-
-  ```sh
-  brew install gemini-cli
-  ```
-
-  Or:
-
-  ```sh
-  npm install -g @google/gemini-cli
-  ```
-
-  Sign in by running `gemini`. The Gemini CLI refuses individual Google accounts at this release and points to Antigravity. The runtime dispatches correctly; the CLI itself declines.
-
-### D13: Antigravity CLI (agy)
+### D12: Antigravity CLI (agy)
 
 Runs workflow steps through your own signed-in `agy`.
 
@@ -239,13 +219,13 @@ Runs workflow steps through your own signed-in `agy`.
 
   Sign in by running `agy`.
 
-### D14: At least one usable provider
+### D13: At least one usable provider
 
 A workflow step is a call to a model. One provider above must be installed and signed in. Ollama is the one that needs no account: set up the Ollama row and its model row, and this one is met.
 
 - Needed for: every deployment (required).
 
-### D15: Lima
+### D14: Lima
 
 Runs the small Linux virtual machine that holds the deployment's only Docker engine. Docker Desktop is not used.
 
@@ -259,7 +239,7 @@ Runs the small Linux virtual machine that holds the deployment's only Docker eng
 
   Without Homebrew, follow https://lima-vm.io/docs/installation/.
 
-### D16: The kit's virtual machine: Docker Engine, Docker Compose and gVisor
+### D15: The kit's virtual machine: Docker Engine, Docker Compose and gVisor
 
 Inside the Lima virtual machine, Docker Engine and Compose run the trace stack (collector, Tempo, Grafana). gVisor sandboxes tool calls at isolation tier 3. The kit installs all three when it creates the virtual machine.
 
@@ -319,7 +299,7 @@ On such a Mac, init stops more than once, and each time it names what to set up.
 2. **A provider:** init stops in the dependency stage with this message, because no provider is set up yet:
 
    ```text
-   init cannot continue until these are in place: D14 At least one usable provider
+   init cannot continue until these are in place: D13 At least one usable provider
    ```
 
 3. **The shortest way on:** set up Ollama, the one provider that needs no account. Install the app from https://ollama.com/download and open it, then pull the model:
@@ -378,7 +358,7 @@ Exit code 5 has a second meaning elsewhere: a workflow run that is put on hold a
 
 ## Read the dependency stage
 
-Init prints one line per dependency, numbered D1 to D16. This excerpt is from a real init (*witnessed*):
+Init prints one line per dependency, numbered D1 to D15. This excerpt is from a real init (*witnessed*):
 
 ```text
 Dependencies (what this deployment needs on the machine):
@@ -390,9 +370,9 @@ Dependencies (what this deployment needs on the machine):
   ok       D9  The Ollama model llama3.2:3b: llama3.2:3b is pulled
   ok       D10 Claude Code CLI: ready: 2.1.325 (Claude Code); signed in (claude.ai)
 ...
-  ok       D14 At least one usable provider: claude_code, ollama, codex, gemini, antigravity
-  ok       D15 Lima: Lima 2.2.1
-  ok       D16 The kit's virtual machine: Docker Engine, Docker Compose and gVisor: Docker 29.9.3, Compose 5.7.1, gVisor runsc
+  ok       D13 At least one usable provider: claude_code, ollama, codex, antigravity
+  ok       D14 Lima: Lima 2.2.1
+  ok       D15 The kit's virtual machine: Docker Engine, Docker Compose and gVisor: Docker 29.9.3, Compose 5.7.1, gVisor runsc
 ```
 
 The first word of a line gives the state:
@@ -413,7 +393,7 @@ For Ollama, init asks about each of the two steps in turn.
 When a required dependency is still missing after the list, init stops with exit code 3 and names it:
 
 ```text
-init cannot continue until these are in place: D14 At least one usable provider
+init cannot continue until these are in place: D13 At least one usable provider
 ```
 
 This is the message on a Mac where no provider is set up yet. Ollama is the provider that needs no account: set up the Ollama entry and its model entry, then run init again.
@@ -435,17 +415,22 @@ These prompts are from a real init (*witnessed*):
       [claude_code] Claude Code CLI
       [ollama] Ollama (local models)
       [codex] Codex CLI
-      [gemini] Gemini CLI
       [antigravity] Antigravity CLI (agy)
     answer [claude_code]: claude_code
 
 [4/14] Fallback provider when the default fails?
       [ollama] Ollama (local models)
       [codex] Codex CLI
-      [gemini] Gemini CLI
       [antigravity] Antigravity CLI (agy)
       [none] no fallback
     answer [ollama]: ollama
+
+[5/14] Which models should each selected provider make available? Type <provider>=<model>,<model>, providers separated by `;`, or press Enter for the defaults.
+      [claude_code] Claude Code CLI  (it lists no models, so any name it knows is accepted unchecked, for example sonnet, opus, haiku, fable. thinking levels, written <model>@<level>: low, medium, high, xhigh, max)
+...
+      note: Format: <provider>=<model>,<model>; <provider>=<model>. The first model named for a provider is its default; Enter keeps the default shown. A provider you do not name keeps its default. Add a thinking level as <model>@<level> where the provider has levels.
+      note: Add or change models later: arhugula provider enable <provider> --model <model> [--model ...]
+    answer [claude_code=sonnet@low; ollama=llama3.2:3b; codex=gpt-6.1-sol; antigravity=gemini-4-argon-medium]: claude_code=sonnet,haiku@low; codex=gpt-6.1-sol@low,gpt-5.6-luna; antigravity=gemini-3.8-flash-low
 ...
 [8/14] Workload classes to bind? Type the numbers.
       [1] pipeline-automation
@@ -457,7 +442,9 @@ These prompts are from a real init (*witnessed*):
 
 Some questions need more than the prompt says:
 
-- **Question 2, providers:** the note under the options explains the limits of Codex and of the Gemini CLI. Init never proposes Codex as the default provider when you selected another provider.
+- **Question 2, providers:** the note under the options explains the limits of Codex. Init never proposes Codex as the default provider when you selected another provider.
+- **Question 5, models:** name the models each provider makes available, and put the one you want as default first. Add a thinking level as `<model>@<level>` for Claude Code and Codex. Init refuses a model or level with a space or a leading `-`, a level on a listed model without levels, and a provider named twice. For Ollama, init proposes `llama3.2:3b` and offers to pull it when it is not pulled.
+  The lists come from each tool's own sign-in, so the names on your Mac differ from the ones above: [Choose a model and a thinking level](providers.md#choose-a-model-and-a-thinking-level) explains them.
 - **Question 11, observability:** `kit` creates the kit's own VM under `<home>/lima`. Init creates it only when 12 GiB are free under the home. The first time takes 5 to 10 minutes, and about 1 minute when the image is cached. **Docker Desktop is not required and is never used.** A Lima instance that was built for another processor type is not offered, and the prompt says why.
 - **Question 9, audit signing:** when you choose `s`, init creates both signing keys itself, before the first run. Every ledger is then signed from its first entry.
 
@@ -496,13 +483,13 @@ The list below gives every question as init prints it, with its default, the rea
 - Why init asks: A second provider keeps a run going when the first one refuses.
 - Asked: always.
 
-### Question 5: `ollama_model`
+### Question 5: `models`
 
-> Ollama model?
+> Which models should each selected provider make available? Type <provider>=<model>,<model>, providers separated by `;`, or press Enter for the defaults.
 
-- Default: `llama3.2:3b`.
-- Why init asks: The model Ollama steps run on. Init offers to pull it when it is absent.
-- Asked: Ollama is selected.
+- Default: the first model each provider's own tool lists for your sign-in. Ollama: `llama3.2:3b` (init offers to pull it when it is not pulled). Where a tool lists none: `sonnet` for Claude Code, the catalogue's example model for a hosted API.
+- Why init asks: Routing, workflows and `--model` can use only the models named here. The first one named for a provider is its default. Where a provider's tool lists its models (Codex, Antigravity, Ollama), init checks each name against that list.
+- Asked: always.
 
 ### Question 6: `ollama_host`
 
@@ -595,9 +582,8 @@ Preflight (machine):
 ...
   ok    P4  445 GiB free
   ok    P5  a plain directory, outside every git checkout
-  warn  P6  each selected CLI provider is installed and signed in: Gemini CLI: unverified (0.66.0; this CLI offers no sign-in check, so the first run is the check); Antigravity CLI (agy): unverified (1.5.9; this CLI offers no sign-in check, so the first run is the check)
-          fix: The Gemini CLI refuses individual Google accounts at this release and points to Antigravity. The runtime dispatches correctly; the CLI itself declines.
-  ok    P7  Ollama answers at http://127.0.0.1:11434; llama3.2:3b is pulled
+  ok    P6  every selected CLI provider is installed, signed in and offers the models named for it
+  ok    P7  Ollama answers at http://127.0.0.1:11434; llama3.2:3b pulled
 ...
   skip  P16 the signing-key directory is usable: audit signing is off
   skip  P17 the offline embedding model is in place: offline embedding routing is off
@@ -622,8 +608,8 @@ The table below lists every check, when it runs, when it fails, and what to do.
 | P3 | CPython 3.12 is available through uv | always | uv has no CPython 3.12 | `uv python install 3.12` (init offers to run it) |
 | P4 | enough free disk space under the home | always | less than 3 GiB is free, or less than 12 GiB when init is about to create the virtual machine | free space on that volume, or choose another home |
 | P5 | the home is outside every git checkout | always | the home is inside a git checkout, or holds a checkout other than `kit` and `upstream` | choose a plain directory outside every git checkout |
-| P6 | each selected CLI provider is installed and signed in | always | the default or fallback provider's CLI is missing or signed out (any other selected one is a warning) | install the CLI and sign in with its own command; `arhugula provider check` shows each |
-| P7 | Ollama answers and has the model | Ollama is selected | Ollama does not answer, or the chosen model is not pulled, and the routing depends on Ollama | `ollama serve`; `ollama pull <model>` (init offers to run it) |
+| P6 | each selected CLI provider is installed, signed in and offers its models | always | the default or fallback provider's CLI is missing or signed out, or its sign-in no longer offers its default model (any other selected provider, or another of its models, is a warning) | install the CLI and sign in with its own command; for a model it no longer offers, the `arhugula provider enable` line the check prints, or answer question 5 again (`init --reconfigure`); `arhugula provider check` shows each |
+| P7 | Ollama answers and has the models | Ollama is selected | Ollama does not answer, or the default Ollama model is not pulled, and the routing depends on Ollama | `ollama serve`; `ollama pull <model>` (init offers to run it) |
 | P8 | the state root can be created safely | always | `<home>/state` holds files the runtime did not stamp, is not yours with mode 0700, or its parent is writable by others | the `chmod` line the check prints, or choose another home |
 | P9 | the state root's filesystem is durable | always | the home is on a RAM disk, or the runtime cannot tell what filesystem it is on | choose a home on a local APFS volume |
 | P10 | the project has no leftover harness state | a project is attached | the project holds a ledger or memory from an earlier setup that kept state inside the checkout | `arhugula state archive-legacy <project>` |
@@ -716,8 +702,8 @@ Surveying this machine (nothing is changed)...
 Dependencies:
   ok       D1  macOS 13 or later: macOS 26.6.2 on Apple silicon
 ...
-  ok       D15 Lima: Lima 2.2.1
-  ok       D16 The kit's virtual machine: Docker Engine, Docker Compose and gVisor: Docker 29.9.3, Compose 5.7.1, gVisor runsc
+  ok       D14 Lima: Lima 2.2.1
+  ok       D15 The kit's virtual machine: Docker Engine, Docker Compose and gVisor: Docker 29.9.3, Compose 5.7.1, gVisor runsc
 
 Preflight:
   ok    P1  macOS 26.6.2 on Apple silicon
@@ -940,12 +926,12 @@ The answers file has one key per question. The kit ships an example, `init-answe
 
 ```json
 {
-  "_about": "An EXAMPLE answers file for `init --answers`. Every path here is a placeholder: replace /absolute/path/to/... with real paths on your machine. `init --questions-json` prints the questions with the defaults computed for your machine.",
+  "_about": "An EXAMPLE answers file for `init --answers`. Every path here is a placeholder: replace /absolute/path/to/... with real paths on your machine. `init --questions-json` prints the questions with the defaults computed for your machine. `models` names, per selected provider, the models it makes available; the first is its default, and `<model>@<level>` adds a thinking level where the provider has levels (Claude Code, Codex). A model a provider's own tool does not list for your sign-in is refused.",
   "home": "/absolute/path/to/arhugula",
   "providers": ["claude_code", "ollama"],
   "primary": "claude_code",
   "fallback": "ollama",
-  "ollama_model": "llama3.2:3b",
+  "models": {"claude_code": ["sonnet", "opus@high"], "ollama": ["llama3.2:3b"]},
   "ollama_host": "http://127.0.0.1:11434",
   "project": "",
   "workloads": ["pipeline-automation", "software-engineering", "research", "content-creation"],
@@ -962,6 +948,8 @@ With an answers file, init behaves strictly:
 
 - **No silent default:** a question that applies and has no answer stops init with exit code 3.
 - **No placeholder:** init refuses a file that still holds `/absolute/path/to`.
+- **No retired provider:** init refuses a file that names a provider the kit no longer offers, and its message says which entries to delete.
+- **Old files still work:** a file in the earlier format, which named one model per provider, is migrated to `models`.
 - **No install on its own:** for a missing dependency, init reports the dependency and its setup command. It stops when the dependency is required.
 
 Keep the answers file outside the repository, because it holds paths of your machine.
