@@ -17,6 +17,7 @@ The runs use Ollama and the model `llama3.2:3b`: see [the dependencies](install.
 - [Create a manifest](#create-a-manifest)
 - [Check a manifest](#check-a-manifest)
 - [Run a manifest](#run-a-manifest)
+- [Give agents tools](#give-agents-tools)
 - [Put an approval gate in a workflow](#put-an-approval-gate-in-a-workflow)
 - [Run the gated example](#run-the-gated-example)
 - [Upstream limit: a lead does not direct its workers](#upstream-limit-a-lead-does-not-direct-its-workers)
@@ -29,13 +30,20 @@ That is the multi-agent execution model:
 
 - **One process runs everything.** `arhugula run` starts the runtime once. The runtime's workflow driver runs every step, in the order the topology sets.
 - **Branches run at the same time.** Parallel branches, an orchestrator's workers and a hierarchy's children run concurrently inside that one process.
-- **Each agent step is one isolated provider call.** The call is short-lived. A command-line provider gets no session and a scrubbed environment. Claude Code and Codex also get no tools of their own; Antigravity keeps its own and starts in the project's repository: see [What each call can see](providers.md#what-each-call-can-see). The [providers page](providers.md#how-the-runtime-calls-a-command-line-provider) shows the exact command lines.
+- **Each agent step is one isolated provider call.** The call is short-lived, and a command-line provider gets no session and a scrubbed environment. Claude Code and Codex also get no tools of their own. Antigravity starts in the project's repository, and no flag switches its tools off: see [What each call can see](providers.md#what-each-call-can-see). The [providers page](providers.md#how-the-runtime-calls-a-command-line-provider) shows the exact command lines.
 - **No terminal multiplexer is involved.** The harness opens no panes and no windows. You watch one command in one terminal.
 - **A reviewer is a role in a topology.** The evaluator of an evaluator-optimizer workflow reviews the generator. The synthesis step of an orchestrator-workers workflow combines the workers. To review with another model, route that step: see [Review with a second model](providers.md#review-with-a-second-model).
 
-Agents change nothing in the world by themselves, with one exception.
-A step that Antigravity serves, as the default or as the fallback, runs that tool with its own tools on, and no gate covers them (*upstream limit*).
-Every other step acts only through the harness: a tool step calls a tool server, and an approval gate can stand in front of that call.
+An agent step changes nothing in the world by itself, with two exceptions:
+
+- **Antigravity.** A step that Antigravity serves runs in the project's repository. The runtime passes no flag that switches its tools off, and no gate would cover them (*upstream limit*). Whether it uses them is not established.
+- **A custom agent.** A step on a custom provider whose command is an agent with its own tools can act. The harness sees only its reply: see [Run an agent that acts with its own tools](providers.md#run-an-agent-that-acts-with-its-own-tools).
+
+Every other step acts only through the harness.
+A tool step calls a tool server.
+On some providers, a model can call the tools of a connected server.
+An approval gate can stand in front of a call.
+[Give agents tools](#give-agents-tools) says which.
 
 ```mermaid
 flowchart TD
@@ -107,11 +115,11 @@ It is the only version the loader accepts.
 | --- | --- | --- |
 | `workflow_id` | The workflow's name. A run reports it, and a paused run is resumed by it. | any text |
 | `workload_class` | The kind of work. The project's config must bind this class. | `pipeline-automation`, `software-engineering`, `research`, `content-creation` |
-| `persona_tier` | Who operates the workflow. It sets the floor for approval gates, and the [auto-approve policy](security-and-isolation.md#set-what-a-gate-approves-without-asking) applies only at `solo-developer`. It is separate from the deployment's `persona_tier` setting, which decides trace sampling, trace redaction and prompt-version approval; the runtime does not compare the two. | `solo-developer`, `team-binding`, `multi-tenant-compliance` |
+| `persona_tier` | Who operates the workflow. It sets the floor for approval gates, and the [auto-approve policy](security-and-isolation.md#set-what-a-gate-approves-without-asking) applies only at `solo-developer`. It is separate from the deployment's `persona_tier` setting, which decides trace sampling, trace redaction and prompt-version approval, and which a gate on a model's tool call reads; the runtime does not compare the two. | `solo-developer`, `team-binding`, `multi-tenant-compliance` |
 | `engine_class` | How the run is executed. Every upstream example uses `pure-pattern-no-engine`, which runs the steps inline. | `pure-pattern-no-engine`, `event-sourced-replay`, `save-point-checkpoint`, `reconciler-loop`, `WAL-segment` |
 | `topology_pattern` | How the steps relate. | the six in [Choose one of the six topologies](#choose-one-of-the-six-topologies) |
 | `layer_budgets` | Time budgets for the routing layers. Every upstream example leaves the list empty. | a list |
-| `hitl_placements` | The approval gates of the workflow. | a list; see [Put an approval gate in a workflow](#put-an-approval-gate-in-a-workflow) |
+| `hitl_placements` | The approval gates of the workflow's tool steps. They do not cover a tool call that a model decides on. | a list; see [Put an approval gate in a workflow](#put-an-approval-gate-in-a-workflow) |
 | `per_step_overrides` | Settings for single steps, keyed by step id. | a table; see below |
 | `fallback_chain` | A provider chain written in the manifest. It is a label: it does not choose the provider. | `primary`, `same_family`, `cross_family` |
 | `worker_selection` | Who chooses an orchestrator's workers. Optional. | `declared-pool` (the default), `lead-plan` |
@@ -169,8 +177,8 @@ The examples on this page use four of the seven step kinds.
 
 | Step kind | What it does | Payload |
 | --- | --- | --- |
-| `inference-step` | Sends messages to a model. | `messages`, `tools`, `params` |
-| `tool-step` | Calls one tool of a connected tool server. | `tool_id`, `tool_args` |
+| `inference-step` | Sends messages to a model. On `ollama` and `anthropic`, the model can call tools: see [Give agents tools](#give-agents-tools). | `messages`, `tools`, `params` |
+| `tool-step` | Calls one named tool of a connected tool server, with fixed arguments. | `tool_id`, `tool_args` |
 | `sub-agent-dispatch` | Runs a child workflow. | `child_workflow_id`, `child_manifest_entry`, `child_steps`, `brief` |
 | `post-join-synthesis` | Combines the outputs of the branches after they join. It takes no tools. | `messages`, `params` |
 
@@ -357,11 +365,254 @@ So `status: completed` does not prove that Ollama served the run.
 The run's progress output is also written to a log file in `<home>/logs/`.
 Read the newest one with `arhugula logs`.
 
+## Give agents tools
+
+This section is for the workflow author and the operator.
+After reading it you can choose which steps use tools, connect a tool server, and know which tools a model can reach.
+A *tool* is an action that a tool server offers, such as reading a note.
+The runtime reaches tool servers through the Model Context Protocol (MCP).
+
+Two other pages complete the account.
+[Set what a gate approves without asking](security-and-isolation.md#set-what-a-gate-approves-without-asking) says who approves a tool call.
+[Run an agent that acts with its own tools](providers.md#run-an-agent-that-acts-with-its-own-tools) says how to use a subscription agent that edits files or runs commands.
+
+### Choose how a step uses a tool
+
+A step reaches a tool in one of two ways.
+
+- **A tool step names the tool.** It calls exactly one named tool with fixed arguments, and no model decides anything. The trace of such a step holds a tool call and no model call (*witnessed*).
+- **An inference step lets the model decide.** The runtime offers the model its tools, and the model chooses whether to call them. Whether the call runs depends on the provider that serves the step.
+
+This table says what happens to the tool calls of a model:
+
+| Provider | What happens to a model's tool calls | Basis |
+| --- | --- | --- |
+| `ollama` | They run. One step can make up to 16 rounds of calls. | *Witnessed*: the model called a tool in 6 of 6 runs |
+| `anthropic` | They run, for up to 16 turns in one step, when the step's `tools` field holds a list, even an empty one. A 17th turn is an error. | Read in the code, not run |
+| `openai` | The model is offered the tools, but its calls are not run. They come back as the step's result. | Read in the code, not run |
+| `claude_code`, `codex`, `antigravity` and a custom provider | These providers take and return text only. A step that lists tools is refused before the call. | Read in the code, not run |
+
+On `openai`, only the memory tools run: a separate loop serves them, and a batch that mixes memory calls with other calls is handed back unrun.
+
+The refusal by a text-only provider is immediate, so the fallback chain does not fail the step but serves it with the next provider.
+A run can therefore end `status: completed` on a provider that you did not choose.
+To see which provider served, read the provider on the run's model-call span.
+A run with `--provider` also prints a `served by` line when its provider failed: see [How routing picks a provider](providers.md#how-routing-picks-a-provider).
+A step with `tools = []` passes the check, and the provider gets text only.
+
+Other step kinds treat tools in these ways:
+
+- **A `declarative-step` calls nothing.** It returns its `payload.output`.
+- **A `post-join-synthesis` step takes no tools.** The runtime rejects a tool binding on it.
+- **A `sub-agent-dispatch` step runs a child workflow.** The steps of the child use tools on the same terms. A child inference step is not offered a tool that its server declares `EXTERNAL_IRREVERSIBLE`. The gate level of the parent becomes a floor for the child, and a `sub-agent-boundary` placement gates the handoff itself.
+- **All six topologies dispatch a step the same way.** A tool is called on the same terms in each of them.
+
+A small model does not always use a tool well.
+After a vague prompt, "Read the note and tell me what it says.", the model called `notes.read` and then invented the note's content (*witnessed*).
+Name the tool and say what to do with its result in the step's message.
+
+### Know which tools a new deployment has
+
+A new deployment has no general-purpose tool: no file tool, no shell tool, no web tool and no git tool.
+On a fresh deployment `arhugula mcp list` prints that no client is configured (*witnessed*).
+A model step can reach only the runtime's own memory tools and the tools of the servers that you connect.
+
+- **The memory tools.** They are `memory.search`, `memory.read`, `memory.write_note`, `memory.propose_promotion` and `memory.request_redaction`. A model gets them only when all four of these hold (see [How memory reaches a model](memory.md#how-memory-reaches-a-model)):
+  - the memory access mode is `standard_memory_tools`;
+  - the runtime has a memory executor;
+  - the provider is `openai`, `ollama` or `anthropic`;
+  - the provider's model family matches the family of the memory scope, which is the primary family of the fallback chain.
+
+  With `--provider ollama` while the chain's primary was `claude_code`, the families differed and the tools were not offered (*witnessed*): the span read `degraded_serve` with the reason `provider_family_scope_mismatch`.
+- **The notes server.** `examples/mcp/notes_server.py` is a demonstration server with two tools. `notes.read` returns its argument, and `notes.write` appends its argument to `notes.txt` beside the server file. Nothing connects it until you run `arhugula mcp add`. [Run the gated example](#run-the-gated-example) uses it.
+- **The echo server.** `upstream/deploy/self-hosted-local/mcp_echo_server.py` is a `stdio` server with one tool, `echo(value)`. The client `sandbox-echo` points at it. That client exists only after `arhugula isolation enable tier-3`. It is a `stdio` client with trust level `L1_SIGNED_PINNED` and blast radius `READ_ONLY`, and its tool runs in a container that has no network.
+- **One tool that no model sees.** The runtime registers a tool named `search_tools`, but it never offers it to a model.
+
+### Connect a tool server
+
+To connect a server that already exists, give the client a name and the server's address:
+
+```sh
+arhugula mcp add <name> --url <url>
+```
+
+The command stores the client with trust level `L3_ALLOW_WITH_AUDIT` and blast radius `READ_ONLY`.
+Then `arhugula mcp test <name>` lists its tools.
+Change those two labels with `--trust` and `--blast-radius`.
+[Declare how far you trust an MCP server](security-and-isolation.md#declare-how-far-you-trust-an-mcp-server) says what each label does.
+[Know which tool servers run today](#know-which-tool-servers-run-today) says which labels run.
+
+These commands manage clients:
+
+| To do this | Run |
+| --- | --- |
+| List the clients | `arhugula mcp list` |
+| Ask a client for its tools | `arhugula mcp test <name>` |
+| Remove a client | `arhugula mcp remove <name>` |
+
+A tool name must be unique across all connected servers.
+A name that two servers share stops the runtime at its start, so every run fails until you remove one client.
+
+### Write a tool server
+
+The smallest working server uses the MCP package that the harness environment already holds.
+This is the core of `examples/mcp/notes_server.py`, cut to one tool:
+
+```python
+import sys
+
+from mcp.server.fastmcp import FastMCP
+
+server = FastMCP("example-notes", host="127.0.0.1", port=int(sys.argv[1]))
+
+
+@server.tool(name="notes.read")
+def read(value: str) -> str:
+    """Return the value unchanged."""
+    return value
+
+
+if __name__ == "__main__":
+    server.run(transport="streamable-http")
+```
+
+The server listens on the loopback address and the port you pass.
+You start it yourself, because the kit starts no tool server.
+Do these steps in order:
+
+1. **Start the server.** Run it in its own terminal, because it keeps running.
+
+   ```sh
+   <home>/env/bin/python <path-to-your-server>.py 18765
+   ```
+
+2. **Connect it.**
+
+   ```sh
+   arhugula mcp add notes --url http://127.0.0.1:18765/mcp
+   ```
+
+3. **Ask it for its tools.**
+
+   ```sh
+   arhugula mcp test notes
+   ```
+
+The output of steps 2 and 3, from the full example server, was this (*witnessed*):
+
+```text
+added MCP client notes (streamable_http_l3, L3_ALLOW_WITH_AUDIT, READ_ONLY).
+check it: arhugula mcp test notes
+notes answers at http://127.0.0.1:18765/mcp with 2 tool(s):
+  notes.read: Return the value unchanged.
+  notes.write: Append the value to notes.txt.
+```
+
+The client carries the label `READ_ONLY`, because no other label runs on this deployment.
+A label is your declaration, so a server whose tool writes is approved like a reading one.
+Read [Know which tool servers run today](#know-which-tool-servers-run-today) before you connect a server that changes anything.
+
+### Choose a transport
+
+The option `--transport` takes five values.
+There is no value for SSH and none for server-sent events.
+
+| Value | What the runtime does | What it needs |
+| --- | --- | --- |
+| `streamable_http_l3` (the default), `streamable_http_l1`, `streamable_http_l2`, `streamable_http_l0` | It calls the server over HTTP. The suffix has no effect: the runtime reads the trust level from `--trust` and treats all four as plain streamable HTTP. | A server that listens at the URL. |
+| `stdio` | It starts the command that `--url` holds. Write the value as `stdio://<command and arguments>`. The runtime splits it as a shell does. The command gets the MCP package's default environment: `HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM` and `USER`. | Isolation tier 3 and the virtual machine. The call then goes to a container command, not to this server. See below. |
+
+The runtime's code names a third kind, server-sent events (`sse`), but no configuration can select it.
+
+### Connect a hosted server with a credential
+
+A hosted server over HTTPS usually wants a token.
+Name the keychain entry that holds it:
+
+```sh
+arhugula mcp add <name> --url https://<host>/mcp --auth-secret-name <entry>
+```
+
+The runtime reads the token from the macOS keychain, in the service `harness` under the account `<entry>`.
+It sends the token as `Authorization: Bearer <token>`.
+The environment is not a fallback for this token: the runtime reads `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` from the environment for the two API providers only.
+The flag is refused for a `stdio` client, and for a plain `http` URL that points to a host other than the loopback address.
+
+The kit has two gaps here, and an operator meets both:
+
+- **No verb stores the token.** Create the keychain entry in your own terminal: [Keep secrets out of TOML](configure.md#keep-secrets-out-of-toml) shows the command.
+- **`arhugula mcp test` sends no token.** It cannot test a server that needs one. It also refuses a `stdio` client. Test such a server with a workflow that calls one of its tools.
+
+A hosted server must also carry the label `READ_ONLY`, as the table below shows.
+
+### Know why an SSH server does not work
+
+The runtime has no SSH transport.
+You can write `ssh <host> <server>` as the command of a `stdio` client, written as `stdio://ssh <host> <server>`.
+That does not give you a working server on this deployment, for three reasons:
+
+- **Tier 3 never sends a tool call to the `ssh` command.** A `stdio` client runs at tier 3 or above. At tier 3, the container driver ignores the MCP connection. It runs the command of the client's sandbox driver in a container, with the call as JSON on standard input.
+- **No agent key reaches `ssh`.** The environment of a `stdio` command holds no `SSH_AUTH_SOCK`, so a key held by an SSH agent is not available to it.
+- **A `stdio` client needs tier 3.** Without a sandbox driver, every run fails at its start: see the next section.
+
+Whether the runtime starts a `stdio` command when it lists tools at its start is not established.
+
+### Know which tool servers run today
+
+Today, a tool server can run only when you label it read-only and reach it over HTTP.
+Any other label makes every run fail at its start, including a run that calls no tool.
+The runtime builds its sandbox drivers at start, and one client without a driver stops it.
+This table shows each case:
+
+| Server | Tier | Does it run today? |
+| --- | --- | --- |
+| HTTP, trust `L3_ALLOW_WITH_AUDIT` or `L1_SIGNED_PINNED`, `READ_ONLY` | 1, on the host | **Yes.** It calls the real server (*witnessed* at `L3_ALLOW_WITH_AUDIT`). |
+| HTTP, `LOCAL_MUTATION` | 2 | **No.** The kit provides no tier 2 driver, and `arhugula isolation attach` refuses a client that is not `stdio`. Every run is refused at its start (*witnessed* at `L3_ALLOW_WITH_AUDIT`). |
+| HTTP, `EXTERNAL_REVERSIBLE` or `EXTERNAL_IRREVERSIBLE` | 3 or 4 | **No**, for the same reason. |
+| HTTP, trust `L2_SANDBOX_ALL`, any blast radius | 4 | **No.** Tier 4 needs Kata or E2B, and this deployment has neither. |
+| HTTP, trust `L0_REFUSE_REMOTE` | none | **No.** The runtime refuses a remote server at this level when you register it. |
+| `stdio`, `READ_ONLY` | 3 | **Only with tier 3 enabled.** Then the call goes to the container command that the sandbox driver names, not to the MCP server. |
+
+Tier 3 for a `stdio` client does not run the server's tools.
+[Run tool calls in a sandbox](security-and-isolation.md#run-tool-calls-in-a-sandbox) says what it does and does not protect.
+So today a tool that changes files, or anything outside the machine, cannot run under an honest label.
+
+The only way to run such a tool is to label its server `READ_ONLY`.
+That label is false, and the runtime then approves its calls as it approves a read: see [Set what a gate approves without asking](security-and-isolation.md#set-what-a-gate-approves-without-asking).
+The runtime's tier model has no driver that calls a remote server from a sandbox (*upstream limit*), and the kit has no tier 2 driver.
+[Known gaps](reference/known-gaps.md#tools-and-permissions) lists each limit.
+
+### Know that a step's `tools` list limits nothing
+
+The `tools` field of an inference step holds tool definitions, not names.
+It is not an allow-list.
+On `ollama` and `anthropic`, the runtime offers the model every registered tool, whatever the list holds: the memory tools and the tools of every connected server.
+A step with `tools = []` still offered `notes.read` to the model, and the model called it (*witnessed*).
+On `openai` the runtime sends the list as written and does not run the calls, and on the command-line providers a list that is not empty is refused.
+
+No setting limits a model step to a subset of the registered tools.
+To keep every tool away from a step, serve it with a text-only provider and write `tools = []`.
+To keep one tool away, do not connect its server.
+
+### Know who approves a tool call
+
+Two cases differ, and the security page explains both.
+
+- **A tool step.** The workflow's `hitl_placements` place the gate, and `tool_filter` narrows it.
+- **A tool call that a model decides on.** The runtime reads neither the placements nor the filter. The gate level comes from the persona, the server's declared blast radius and its trust level.
+
+With the default policy, a tool of a server that you label `READ_ONLY` is approved without asking in both cases.
+So `examples/workflows/gated-tool.toml` asks nobody until you switch `solo-floor-auto` off (*witnessed*, both ways).
+
 ## Put an approval gate in a workflow
 
 An *approval gate* stops a run and asks a person before a step goes on.
 Upstream calls this human-in-the-loop (HITL).
 You declare gates in the manifest's `hitl_placements` list.
+
+These placements decide the gates of tool steps.
+They do not decide the approval of a tool call that a model chooses to make: for those calls the runtime reads no placement.
+[Set what a gate approves without asking](security-and-isolation.md#set-what-a-gate-approves-without-asking) explains both cases.
 
 Each placement names a position.
 There are three positions.
@@ -377,11 +628,12 @@ A placement has up to four fields.
 | Field | Meaning |
 | --- | --- |
 | `position` | one of the three positions; required |
-| `tool_filter` | for `pre-action`: the exact tool names that the gate covers; patterns are refused |
+| `tool_filter` | for `pre-action`: the exact tool names that the gate covers; patterns and an empty list are refused. A filtered placement matches only a tool step whose `tool_id` is listed, never an inference step. A `pre-action` placement with no filter matches every action, inference steps included |
 | `cascade_policy` | replaces the workload class's default cascade policy: `pause`, `proceed` or `cascade-cancel` |
 | `timeout` | how long the gate waits for an answer, in milliseconds; without it, the gate waits 900 seconds. The kit sets the step deadline to 960 seconds and the run limit to 3600 seconds, so a gate can wait its full 900 seconds unless you lowered them: see [the capability matrix](configure.md#capability-matrix) |
 
-A gate does not always ask.
+A step that no placement matches has no gate at all.
+A gate does not always ask, either.
 The deployment's policy lets some calls pass without asking; see it with `arhugula policy show`:
 
 ```text
@@ -397,6 +649,8 @@ With a setting off, the gate asks you in the terminal. A run without a terminal 
 The kit ships a workflow with a gate, `examples/workflows/gated-tool.toml`, and a small tool server for it (*kit extension*).
 The workflow has two tool steps.
 A `pre-action` placement puts a gate in front of the tool `notes.write`; the tool `notes.read` has no gate.
+With the default policy, this gate asks nobody: it approves the call by itself, and `notes.write` writes its file (*witnessed*).
+Step 4 below switches the policy so that the gate asks.
 
 The server speaks the Model Context Protocol (MCP), which is how the runtime reaches tools.
 Its two tools are `notes.read`, which returns its argument, and `notes.write`, which appends its argument to a file beside the server.
@@ -409,7 +663,7 @@ Do these steps in order.
    <home>/env/bin/python <home>/kit/examples/mcp/notes_server.py 18765
    ```
 
-2. **Connect the server.** Give the client any name; this example uses `notes` and leaves `--blast-radius` at its default, `READ_ONLY`, although `notes.write` appends to a file. It does so because this deployment refuses every run while a URL client is declared `LOCAL_MUTATION`: see [known gaps](reference/known-gaps.md#platform-and-provider-limits). So the gate asks only because step 4 switches the policy off. Declare your own tool server honestly when it writes: read [Declare how far you trust an MCP server](security-and-isolation.md#declare-how-far-you-trust-an-mcp-server) first.
+2. **Connect the server.** Give the client any name; this example uses `notes` and leaves `--blast-radius` at its default, `READ_ONLY`, although `notes.write` appends to a file (*witnessed*). It does so because this deployment refuses every run while a URL client is declared `LOCAL_MUTATION`: see [known gaps](reference/known-gaps.md#platform-and-provider-limits). So the gate asks only because step 4 switches the policy off. A label is your declaration and nothing checks it: read [Declare how far you trust an MCP server](security-and-isolation.md#declare-how-far-you-trust-an-mcp-server) first.
 
    ```sh
    arhugula mcp add notes --url http://127.0.0.1:18765/mcp
@@ -520,9 +774,12 @@ Kit modules and files:
 - `lib/arhugula_kit/workflows.py`
 - `lib/arhugula_kit/common.py`
 - `lib/arhugula_kit/verbs_config.py`
+- `lib/arhugula_kit/bridge.py`
+- `lib/arhugula_kit/isolation.py`
 - `fragments/data-flow.toml`
 - `examples/workflows/gated-tool.toml`
 - `examples/workflows/two-agents.toml`
+- `examples/workflows/agent-acts.toml`
 - `examples/mcp/notes_server.py`
 
 Upstream sources, relative to the home:
@@ -530,6 +787,11 @@ Upstream sources, relative to the home:
 - `upstream/examples/README.md` and `upstream/examples/*.toml`
 - `upstream/docs/how-to-operate-runtime.md`
 - `upstream/harness-runtime/src/harness_runtime/lifecycle/workflow_manifest_loader.py`
+- `upstream/harness-runtime/src/harness_runtime/lifecycle/llm_dispatch.py`: which providers run a model's tool calls, and the tools a step is offered
+- `upstream/harness-runtime/src/harness_runtime/lifecycle/step_dispatchers.py` and `sub_agent_dispatch.py`: which step kinds can call a tool
+- `upstream/harness-runtime/src/harness_runtime/bootstrap/factories/mcp_client_host_factory.py` and `runtime_tool_dispatcher_factory.py`: transports, labels, credentials and sandbox drivers
+- `upstream/harness-as/src/harness_as/discriminators.py`, `mcp_transport_floor.py`, `sandbox_tier_floor.py` and `blast_radius_floor.py`: the transport values and the tier rules
+- `upstream/deploy/self-hosted-local/mcp_echo_server.py`: the echo server
 - `upstream/harness-runtime/src/harness_runtime/cli/app.py`
 - `upstream/harness-cp/src/harness_cp/workflow_manifest_entry.py`
 - `upstream/harness-cp/src/harness_cp/hitl_placement.py`

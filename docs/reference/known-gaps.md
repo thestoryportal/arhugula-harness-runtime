@@ -25,6 +25,7 @@ Upstream package sources are under `upstream/<package>/src/`; the tables give th
 - [Upstream limits at the pin](#upstream-limits-at-the-pin)
 - [Kit extensions](#kit-extensions)
 - [Kit behaviours that stay as they are](#kit-behaviours-that-stay-as-they-are)
+- [Kit gaps in tool handling](#kit-gaps-in-tool-handling)
 - [Platform and provider limits](#platform-and-provider-limits)
 - [Reported upstream](#reported-upstream)
 - [Sources](#sources)
@@ -77,9 +78,39 @@ Where the kit offers a way around one, the table says so.
 | Upstream ships no key generator. | The kit adds `arhugula audit keygen` (*kit extension*). | a search of the upstream packages, documents and tools finds key generation in test files only |
 | There is no key rotation. | The keys are unencrypted files, and one fixed key signs for the life of a ledger. | `harness-runtime/src/harness_runtime/config/local_ed25519_signing_backend.py`: "does not provide rotation by key period"; `kit/lib/arhugula_kit/bridge.py`, `NoEncryption` |
 | The Codex profile is marked HELD. | Upstream has not tested how much of the filesystem the Codex CLI can read. `init` proposes Codex as the default provider only when it is the only provider selected. | `upstream/docs/how-to-deploy.md`, the row for `omarchy.codex.toml.example`; `kit/lib/arhugula_kit/providers.py`; `kit/lib/arhugula_kit/questions.py`, `_default_primary` |
-| A `stdio` MCP client and an HTTP MCP client do not work together. | An example is tier 3's `sandbox-echo` together with a client added by `arhugula mcp add`. With both kinds configured, every run serves its tool calls and then ends in `asyncio.exceptions.CancelledError: Cancelled via cancel scope ...` while the runtime shuts its MCP clients down. The exit code is 1. This also hits a workflow that uses only one of the two clients. With either client alone the same workflow ends `status: completed`. The same error was seen on `hold` and on `resume` in an earlier session; that was not captured again. Keep one kind configured at a time: run `arhugula isolation disable`, or `arhugula mcp remove <name>`. | *witnessed* on the development deployment, with transcripts kept; `harness-runtime/src/harness_runtime/lifecycle/mcp_client_host.py`, `MCPClientHost.shutdown` |
 
 Read [security and isolation](../security-and-isolation.md) for what signing and the sandbox do and do not protect.
+
+### Tools and permissions
+
+These limits concern the tool calls that a model makes and who approves them.
+[Give agents tools](../workflows.md#give-agents-tools) and [Set what a gate approves without asking](../security-and-isolation.md#set-what-a-gate-approves-without-asking) describe the behaviour.
+Each row ends with an estimate of the size of the upstream fix.
+Paths are under `<home>/upstream/`.
+
+| Limit | What you see | Evidence |
+| --- | --- | --- |
+| A model's tool calls are not run on `openai`. | The runtime sends the step's tools to OpenAI, and the model's tool calls come back as the step's result, unrun. Only the memory tools have a loop. A fix needs an OpenAI request projection and a turn loop; the loop, the gate and the fencing exist for `ollama`. Upstream issue: not filed yet. Size: medium. | `harness-runtime/src/harness_runtime/lifecycle/llm_dispatch.py`, the `openai` arm, and the `ollama` loop as the model for it |
+| A step's `tools` list is not an allow-list. | On `ollama` and `anthropic`, the registry's frozen set of every tool replaces the list. A step with `tools = []` still offered `notes.read` to the model, and the model called it (*witnessed*). No setting limits a model step to a subset of tools. Intersecting the set with the step's names is simple, but the prompt-cache design assumes one frozen set. Upstream issue: not filed yet. Size: medium. | `harness-runtime/src/harness_runtime/lifecycle/llm_dispatch.py`, the comment "The frozen superset REPLACES `payload.tools`"; `harness-runtime/src/harness_runtime/lifecycle/frozen_tool_superset.py` |
+| The command-line providers are text-only: the harness mediates none of their tools. | `claude_code`, `codex`, `antigravity` and a custom provider take and return text. A fix needs an MCP bridge that each CLI can reach, with a gate and an audit of the CLI's own tool calls. Upstream issue: not filed yet. Size: large. | `harness-runtime/src/harness_runtime/lifecycle/external_cli_provider.py`; `harness-runtime/src/harness_runtime/lifecycle/llm_dispatch.py`, the refusal "external CLI provider ... is text-only; tools are not supported" |
+| A command-line step that lists tools silently falls over to the next provider. | The refusal is classed as fail-fast, so the fallback chain moves on instead of failing the step, and a run can end `status: completed` on another provider. The fix is to refuse such a manifest before the run. Upstream issue: not filed yet. Size: small. | `harness-runtime/src/harness_runtime/lifecycle/retry_breaker_fallback.py`, the fail-fast classes |
+| A model's tool calls ignore `hitl_placements` and `tool_filter`. | The gate level of a model's call comes from the persona and the server's labels only, so a placement cannot approve or exempt one tool. The fix passes the step's placements into the tool-loop context. Upstream issue: not filed yet. Size: small. | `harness-runtime/src/harness_runtime/bootstrap/factories/r_cxa_2_producer_loop_factory.py`, `_HostTrustGateLevelEvaluator`; `harness-runtime/src/harness_runtime/lifecycle/hitl_tool_loop.py`, `HITLToolLoopContext` |
+| The model tool loop takes its persona from the deployment's config, not from the manifest. | A tool step reads the workflow's `persona_tier`, and a model's call reads the config's, so the two can differ. The fix reads the persona from the step context. Upstream issue: not filed yet. Size: small. | `harness-runtime/src/harness_runtime/bootstrap/stage_5_loop_init.py`, `persona_tier=config.persona_tier`; `harness-runtime/src/harness_runtime/lifecycle/llm_dispatch.py` |
+| A gate on a model's tool call cannot time out, pause or hold without a terminal. | The loop waits with no timeout, and a run with no terminal rejects the gate. The fix needs a timeout and the durable-async webhook and pause path that the gate composer already has. Upstream issue: not filed yet. Size: medium. | `harness-runtime/src/harness_runtime/bootstrap/factories/r_cxa_2_producer_loop_factory.py`; `harness-runtime/src/harness_runtime/lifecycle/llm_dispatch.py` |
+
+### Tool servers and sandboxes
+
+These limits concern which tool servers can run and how far a call is separated from your Mac.
+[Know which tool servers run today](../workflows.md#know-which-tool-servers-run-today) describes the effect.
+Paths are under `<home>/upstream/`.
+
+| Limit | What you see | Evidence |
+| --- | --- | --- |
+| The blast radius is one label for each server, and the operator declares it. | Every tool of a server carries the server's label, and nothing checks it. `notes.write` ran as `READ_ONLY` and wrote a file (*witnessed*). A per-tool override is small, but gates for mutating tools also depend on a tier 2 driver. Upstream issue: not filed yet. Size: medium. | `harness-runtime/src/harness_runtime/bootstrap/factories/mcp_client_host_factory.py`, `default_blast_radius`; `harness-runtime/src/harness_runtime/types.py`, `MCPClientConfig` |
+| A remote client whose label is not `READ_ONLY` cannot run: tiers 2 to 4 have no driver that calls a remote server. | A remote server cannot be sandboxed by a local container, so the tier model for remote servers needs a design decision. The witnessed refusal is in [Platform and provider limits](#platform-and-provider-limits). Upstream issue: not filed yet. Size: large. | `harness-runtime/src/harness_runtime/lifecycle/docker_tool_execution_driver.py`; `harness-runtime/src/harness_runtime/bootstrap/factories/runtime_tool_dispatcher_factory.py` |
+| The `stdio` and container tiers never call the MCP server itself. | The container driver runs the command of the sandbox driver and ignores the MCP client, so tier 3 answers a call with a container command. A fix needs to run the MCP server inside the sandbox and speak MCP over the container's standard input and output. Upstream issue: not filed yet. Size: large. | `harness-runtime/src/harness_runtime/lifecycle/docker_tool_execution_driver.py`, the unused `mcp_client_host` |
+| There is no SSH transport, and a `stdio` command gets no `SSH_AUTH_SOCK`. | A tool reached by `ssh` cannot be used today. A fix adds a transport value with tier, trust and floor rows, and a decision about passing the SSH agent's socket. Upstream issue: not filed yet. Size: medium. | `harness-as/src/harness_as/discriminators.py`, `MCPTransport`; `harness-runtime/src/harness_runtime/lifecycle/mcp_client_host.py`, the `stdio` environment |
+| Trust level `L1_SIGNED_PINNED` pins nothing and checks no signature. | The level appears only in the enum and the floor tables, and it only raises the gate floor to `ask`. A fix adds certificate or key pinning and a check at connect time. Upstream issue: not filed yet. Size: medium. | `harness-as/src/harness_as/sandbox_tier_floor.py`; `harness-runtime/src/harness_runtime/lifecycle/mcp_client_host.py`, the HTTP connect |
 
 ## Kit extensions
 
@@ -128,9 +159,20 @@ This version does not change them.
 | The help of a runtime memory verb shows the kit's flags only. | `arhugula memory <verb> --help` lists `--project`, `--operator` and `--run-id` for each memory verb that [the command reference](cli.md) marks `runtime`. [Memory](../memory.md) lists the runtime's own arguments. | `kit/lib/arhugula_kit/verbs_memory.py`, `_tool_verb` |
 | `arhugula validator unbind` of the last binding removes more than the binding. | It drops the whole `validator_framework_config` table of that scope. | `kit/lib/arhugula_kit/verbs_authoring.py`, `_validator_unbind` |
 | No verb removes a `--pythonpath`. | `arhugula validator bind --pythonpath <dir>` adds the directory to the import path of every run. It stays there after you unbind the validator. | `kit/lib/arhugula_kit/verbs_authoring.py`, `_validator_bind`; `kit/lib/arhugula_kit/spec.py`, `python_paths` |
-| No verb stores the credential of an MCP server. | `arhugula mcp add --auth-secret-name <entry>` only names the keychain entry, and `arhugula provider key set` stores the keys of `anthropic` and `openai` only. Create the entry yourself: [Keep secrets out of TOML](../configure.md#keep-secrets-out-of-toml) shows the command. | `kit/lib/arhugula_kit/verbs_config.py`, `_mcp_add` and `_provider_key_set`; `harness-runtime/src/harness_runtime/bootstrap/factories/mcp_client_host_factory.py`, `resolve_bootstrap_value`; `harness-runtime/src/harness_runtime/config/provider_secrets.py`, `keyring.get_password` |
 | `arhugula state restore` replaces the pause journals. | The pause journals are in the state root, at `<home>/state/pause-journal`. A restore puts the journals of the archive in their place, so a gate put on hold after the backup is not in the restored state root. An upgrade and a rollback do not touch the state root, and a relocate moves it whole. Resuming a gate on hold after any of the four was not witnessed. Answer the gates on hold first: `arhugula gate list` shows them. | `kit/lib/arhugula_kit/layout.py`, `pause_journal`; `kit/lib/arhugula_kit/verbs_state.py`, `_restore`; `kit/lib/arhugula_kit/verbs_lifecycle.py`, `_upgrade` and `_relocate` |
 | After `arhugula relocate`, the rollback copy belongs to the earlier home. | The move rebuilds the environment and keeps the one it replaces at `<home>/env.rollback`. That copy was built at the earlier path, and its scripts carry that path. A rollback to it was not tried, so do not roll back to it. | `kit/lib/arhugula_kit/verbs_lifecycle.py`, `_relocate`; `kit/bin/install.sh`, the step "environment" |
+
+## Kit gaps in tool handling
+
+These are gaps in the kit's own verbs, not in upstream.
+Each is open and small to close.
+Paths are under `<home>/kit/` unless they start with `harness-`.
+
+| Gap | What you see | Place in the code |
+| --- | --- | --- |
+| No verb stores the credential of an MCP server. | `arhugula mcp add --auth-secret-name <entry>` only names the keychain entry, and `arhugula provider key set` stores the keys of `anthropic` and `openai` only. Create the entry yourself: [Keep secrets out of TOML](../configure.md#keep-secrets-out-of-toml) shows the command. The fix reuses the provider path with the service `harness` and the account `<entry>`. | `lib/arhugula_kit/verbs_config.py`, `_mcp_add` and `_provider_key_set`; `harness-runtime/src/harness_runtime/bootstrap/factories/mcp_client_host_factory.py`, `resolve_bootstrap_value`; `harness-runtime/src/harness_runtime/config/provider_secrets.py`, `keyring.get_password` |
+| `arhugula mcp test` sends no credential. | It cannot test a server that needs a token, and it refuses a `stdio` client. The fix reads the keychain secret and passes `Authorization: Bearer`. | `lib/arhugula_kit/bridge.py`, `mcp_tools`; `lib/arhugula_kit/verbs_config.py`, `_mcp_test` |
+| The kit has no tier 2 driver, though the virtual machine has Docker. | A client that resolves to tier 2 refuses every run. A driver would mirror the tier 3 wrapper without `--runtime runsc`, and it would inherit the upstream gap that a container command answers the call instead of the MCP server. Size: small to medium. | `lib/arhugula_kit/isolation.py` |
 
 ## Platform and provider limits
 
@@ -145,17 +187,21 @@ This version does not change them.
 | Thinking is set per step for `anthropic`, `openai` and `ollama` (*upstream limit*). | The runtime has no deployment-wide or routing-level thinking setting for them. Set it in the step's `params` in the manifest: [Choose a model and a thinking level](../providers.md#choose-a-model-and-a-thinking-level). | `kit/lib/arhugula_kit/providers.py`, `PER_STEP` |
 | Tempo metrics are empty after a restart. | After Tempo restarts, metric panels stay empty until the next run writes a span. The cause is Tempo's metrics generator, not the harness. | observed on the development deployment; see [observability](../observability.md) |
 | An API key in the environment is also read. | When the keychain has no entry for an API-key provider, the runtime reads `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` from the environment. This is upstream's default backend. Unset the variable to make the keychain the only source. | `harness-runtime/src/harness_runtime/config/provider_secrets.py`, `_KEYRING_TO_ENV_VAR` |
-| Antigravity calls run in the project directory with their own tools on. | The runtime starts the CLI in the directory it runs in, which is the project's directory. It passes no flag that switches its tools off; Antigravity gets `--sandbox` only. Claude Code and Codex run in a new empty directory with their tools off. | `harness-runtime/src/harness_runtime/lifecycle/external_cli_provider.py`; see [how provider calls are isolated](../security-and-isolation.md#how-provider-calls-are-isolated) |
+| Antigravity calls run in the project directory, and no flag switches its tools off. | The runtime starts the CLI in the directory it runs in, which is the project's directory. It passes no flag that switches its tools off; Antigravity gets `--sandbox` only, and the runtime refuses nothing after the call. Whether `--print --sandbox` runs its own tools is not established. Claude Code and Codex run in a new empty directory with their tools off. | `harness-runtime/src/harness_runtime/lifecycle/external_cli_provider.py`; see [how provider calls are isolated](../security-and-isolation.md#how-provider-calls-are-isolated) |
 | Docker Desktop is never used. | The only Docker engine is the one inside the virtual machine. Without a virtual machine there is no trace stack and no tier 3. | `kit/lib/arhugula_kit/vm.py`, `engine` |
 
 ## Reported upstream
 
-Six limits are reported to the upstream repository, `thestoryportal/arhugula-harness`.
-One more was fixed there: the runtime refused Codex's reply (pull request 1753), and the kit pins the fixed commit.
+Five limits are reported to the upstream repository, `thestoryportal/arhugula-harness`.
+Two more were fixed there, and the kit pins a commit that holds both fixes.
+The first is the refusal of Codex's reply (pull request 1753).
+The second is a failure at shutdown whenever two tool servers were connected, caused by the order in which the runtime closed their connections (issue 1756, pull request 1760).
+With a `stdio` and an HTTP client both configured, both runs ended `status: completed` at the pin (*witnessed*).
+
+The limits under [Tools and permissions](#tools-and-permissions) and [Tool servers and sandboxes](#tool-servers-and-sandboxes) are not filed yet.
 
 - **The lead-directed worker plan.** Upstream issue 1754.
 - **The eval judge or scored suite.** Upstream issue 1755.
-- **A `stdio` and an HTTP MCP client together.** Upstream issue 1756.
 - **A thinking level outside the model name.** Upstream issue 1757.
 - **An OpenAI-compatible endpoint as a provider.** Upstream issue 1758.
 - **The wait at a gate counts against the step deadline.** Upstream issue 1759. The kit's longer limits work around it.
@@ -178,6 +224,9 @@ Upstream, under `<home>/upstream/`:
 - `harness-cp/src/harness_cp/worker_plan.py`
 - `harness-od/src/harness_od/otel_genai_base.py`, `cost_record_otel_serializer.py`, `rate_table_v1.py`, `eval_vs_runtime_gate.py`, `alignment_floor_drift_algorithm.py`, `operator_burden_eval_primitives.py`
 - `harness-runtime/src/harness_runtime/lifecycle/tracer_provider.py`, `operator_input.py`, `hitl_gate_composer.py`, `skill_activation.py`, `runtime_tool_dispatcher.py`, `mcp_client_host.py`, `external_cli_provider.py`
+- `harness-runtime/src/harness_runtime/lifecycle/llm_dispatch.py`, `frozen_tool_superset.py`, `hitl_tool_loop.py`, `retry_breaker_fallback.py`, `docker_tool_execution_driver.py`
+- `harness-runtime/src/harness_runtime/bootstrap/factories/r_cxa_2_producer_loop_factory.py`, `mcp_client_host_factory.py`, `runtime_tool_dispatcher_factory.py`; `harness-runtime/src/harness_runtime/bootstrap/stage_5_loop_init.py`; `harness-runtime/src/harness_runtime/types.py`
+- `harness-as/src/harness_as/discriminators.py`, `sandbox_tier_floor.py`
 - `harness-runtime/src/harness_runtime/admin/pause_journal_enumeration.py`, `record_migration.py`
 - `harness-runtime/src/harness_runtime/config/local_ed25519_signing_backend.py`, `provider_secrets.py`
 - `harness-runtime/src/harness_runtime/bootstrap/factories/managed_agents_dispatcher_factory.py`

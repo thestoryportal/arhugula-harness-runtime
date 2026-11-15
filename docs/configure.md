@@ -243,7 +243,7 @@ Three phrases recur in the last column:
 | `tenant_id` | The name that separates one project's records from another's: the project name. | `arhugula project add` |
 | `path_bindings` | Where skills, prompts, the routing manifest and the state ledger live for each workload class. | `arhugula project add`; worktree options with feature `worktree-isolation` |
 | `state_placement` | The state root, and directories that must never hold state. | The home decides the state root (`arhugula relocate`); `init` question 13 sets the other directories (`arhugula init --reconfigure`) |
-| `persona_tier` | Whether the deployment counts as one developer or a team. It decides trace sampling, trace redaction and whether a prompt version needs approval. An approval gate reads the `persona_tier` of the workflow's manifest instead: see [workflows](workflows.md#read-a-manifest-field-by-field). | Feature `persona-team` |
+| `persona_tier` | Whether the deployment counts as one developer or a team. It decides trace sampling, trace redaction and whether a prompt version needs approval. A gate on a tool step reads the `persona_tier` of the workflow's manifest instead: see [workflows](workflows.md#read-a-manifest-field-by-field). A gate on a tool call that a model decides on reads this key: see [Set what a gate approves without asking](security-and-isolation.md#set-what-a-gate-approves-without-asking). | Feature `persona-team` |
 | `default_topology` | The topology used when a workflow names none. | Fixed by the kit as `single-threaded-linear`; `config set` |
 | `pidfile_path` | The file that records the running runtime's process id. | Fixed by the kit under `<home>/run` |
 
@@ -281,17 +281,18 @@ Three phrases recur in the last column:
 
 | Key | What it means | Set it with |
 | --- | --- | --- |
-| `hitl_auto_approve_policy` | What an approval gate approves without asking. | `arhugula policy set` |
-| `mcp_clients` | The MCP tool servers, each with its trust level, blast radius and optional sandbox. | `arhugula mcp add`, `arhugula mcp remove`; the sandbox with `arhugula isolation enable` and `isolation attach` |
+| `hitl_auto_approve_policy` | What an approval gate approves without asking, at the `solo-developer` persona. It has two settings. | `arhugula policy set` |
+| `mcp_clients` | The MCP tool servers, each with its trust level and blast radius, which are your declarations, and an optional sandbox. | `arhugula mcp add`, `arhugula mcp remove`; the sandbox with `arhugula isolation enable` and `isolation attach` |
 | `trust_policy` | The trust rule for MCP servers that you do not list. | Feature `trust-policy`; `config set` for its lists |
 | `sandbox_decision_policy` | The sandbox decision policy. The table has no fields at this pin. | Feature `sandbox-policy` |
 | `validator_framework_config` | The validators bound to step ids. | `arhugula validator bind`, `arhugula validator unbind` |
 | `pause_resume_protocol_config` | Whether a paused run is written to a journal so it can continue later. | `arhugula pause enable`, `arhugula pause disable` (feature `durable-pause`) |
 | `webhook_delivery_composer_config` | The address that receives a notification when a run pauses. | `arhugula webhook set`, `arhugula webhook clear` |
 
-Add a `stdio` tool server with `arhugula mcp add <name> --transport stdio` and the server's command in `--url`.
+Add a `stdio` tool server with `arhugula mcp add <name> --transport stdio` and the server's command in `--url`, written as `stdio://<command and arguments>`.
 Its tools run only at isolation tier 3, which needs the virtual machine: see [Give your own MCP client a sandbox](security-and-isolation.md#give-your-own-mcp-client-a-sandbox).
-A `stdio` client and an HTTP client do not work together: see [the troubleshooting entry](troubleshooting.md#cancellederror-cancelled-via-cancel-scope-stdio-and-http-mcp-clients-together).
+A `stdio` client and an HTTP client can be configured together.
+Which servers can run, and with which labels, is in [Know which tool servers run today](workflows.md#know-which-tool-servers-run-today).
 
 ### Prompts and skills
 
@@ -806,6 +807,9 @@ What an approval gate approves without asking (solo-developer persona):
 
 With a setting off, the gate asks you in the terminal. A run without a terminal rejects the gate.
 ```
+
+The policy applies to a tool step with a matching placement and to a tool call that a model decides on.
+[Set what a gate approves without asking](security-and-isolation.md#set-what-a-gate-approves-without-asking) says what each setting reaches, and what no setting can do.
 
 Change a setting with `arhugula policy set <setting> <on|off>`, for example `arhugula policy set solo-floor-auto off`.
 Answer a gate that asks within 15 minutes: the gate waits 900 seconds, and the kit's step deadline is 960 seconds. See `step_dispatch_timeout_seconds` in [the capability matrix](#capability-matrix).

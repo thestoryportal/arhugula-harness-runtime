@@ -28,13 +28,13 @@ cat <home>/kit/PIN
 ```
 
 ```text
-2e1ba1f764be27601441936692da2b6c30d61f7c
+a9761ddca7f1a07cd1c0ccd9bcf550c2dc951ab5
 ```
 
 `arhugula --version` prints the kit's version and the same commit, read from `PIN`:
 
 ```text
-arhugula kit 0.1.0; upstream pin 2e1ba1f764be27601441936692da2b6c30d61f7c
+arhugula kit 0.1.0; upstream pin a9761ddca7f1a07cd1c0ccd9bcf550c2dc951ab5
 ```
 
 The environment keeps its own record of the commit it was built from, in `<home>/env/.arhugula-pin`. `arhugula upgrade` compares the commit you ask for with that record, not with `PIN`.
@@ -130,13 +130,13 @@ An upgrade and its re-verify ran on the development machine (*witnessed*). The i
 The `verify` stage proves what the install put in the environment: see [what the upgrade does](#what-the-upgrade-does-in-order).
 
 ```text
-install: upstream at 2e1ba1f7
+install: upstream at a9761ddc
 install: build wheels
 install: export hashed locks
 install: packaging gate
 install: environment
 install: verify
-install: installed 2e1ba1f7 at <home>/env
+install: installed a9761ddc at <home>/env
 ```
 
 The re-verify ends with the smoke runs:

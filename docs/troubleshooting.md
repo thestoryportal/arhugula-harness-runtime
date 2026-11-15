@@ -241,6 +241,19 @@ RT-FAIL-FALLBACK-EXHAUSTED: fallback chain exhausted after candidate <provider>:
 - **Prevent:** `arhugula feature list` shows whether `deadlines` is on. Without it, the deadline is 960 seconds. Raise it before you run a workflow on a slow model.
 - **Status:** *witnessed* in `doctor --self-test`.
 
+### `is text-only; tools are not supported`: a step lists tools
+
+The runtime refuses a step that lists tools when a command-line provider serves it:
+
+```text
+external CLI provider 'claude_code' is text-only; tools are not supported
+```
+
+- **Cause:** the step's `tools` list is not empty, and `claude_code`, `codex`, `antigravity` or a custom provider received the step. The refusal is immediate, so the fallback chain abandons that provider and serves the step with the next one. You may see no failure: the run can end `status: completed` on another provider.
+- **Fix:** write `tools = []` in the step, or route the step to `ollama` or `anthropic`, which run a model's tool calls: see [Choose how a step uses a tool](workflows.md#choose-how-a-step-uses-a-tool).
+- **Prevent:** read the `served by` line of a run with `--provider`, or the provider named on the run's model-call span.
+- **Status:** read in the code; not witnessed.
+
 ### `RT-FAIL-VALIDATOR-STAGE-MATERIALIZE`: a validator class cannot be loaded
 
 ```text
@@ -293,18 +306,18 @@ RT-FAIL-PROMPT-SELECTION-UNAUTHORED: prompt-selection binding names version_sha=
 - **Prevent:** select versions with `arhugula prompt select`. It looks the version up among the authored ones before it stores the selection.
 - **Status:** *witnessed* in `doctor --self-test`.
 
-### `CancelledError: Cancelled via cancel scope`: stdio and HTTP MCP clients together
+### `CancelledError: Cancelled via cancel scope`: two tool servers on an old pin
 
-The run serves its tool calls. Then it prints a Python traceback where the `status:` line belongs, and it exits 1. The traceback ends with:
+On an older pin, a run serves its tool calls. Then it prints a Python traceback where the `status:` line belongs, and it exits 1. The traceback ends with:
 
 ```text
 asyncio.exceptions.CancelledError: Cancelled via cancel scope 10f0f7410 by <Task pending name='Task-1' coro=<run() running at <home>/env/lib/python3.12/site-packages/harness_runtime/api.py:859> cb=[_run_until_complete_cb() at .../lib/python3.12/asyncio/base_events.py:181]>
 ```
 
-- **Cause:** the configuration holds a stdio MCP client and an HTTP MCP client at the same time. One example is isolation tier 3's `sandbox-echo`, a stdio client, together with a client added by `arhugula mcp add <name> --url <url>`. The runtime fails while it shuts its MCP clients down when the run ends (*upstream limit*). Every run fails this way, even a workflow that uses only one of the two clients. With either client alone, the same workflow ends `status: completed`.
-- **Fix:** keep one kind of client configured at a time. `arhugula mcp list` shows which clients are configured and the transport of each. `arhugula isolation disable` removes the tier-3 stdio client. `arhugula mcp remove <name>` removes one client by name.
-- **Prevent:** run `arhugula mcp list` before you turn tier 3 on or add a client.
-- **Status:** *witnessed* on `arhugula run`, for a workflow that uses both clients and for one that uses only the stdio client. The same error was seen on `hold` and on `resume` in an earlier session; that transcript was not kept. The upstream issue reference is in [known gaps](reference/known-gaps.md).
+- **Cause:** your deployment runs a commit from before upstream pull request 1760, and two tool servers are connected. The runtime closed its tool-server connections in an order that failed for any two servers.
+- **Fix:** run `arhugula upgrade`. The kit pins the fixed commit, `a9761ddca7f1a07cd1c0ccd9bcf550c2dc951ab5`.
+- **Prevent:** after you update the kit, run `arhugula upgrade`, and check the pin with `arhugula --version`.
+- **Status:** the failure was *witnessed* before the fix. After the fix, a `stdio` client and an HTTP client both configured gave `status: completed` on two runs (*witnessed*).
 
 ### Messages explained on other pages
 
@@ -312,7 +325,7 @@ These four messages have their explanation on the page of the feature that raise
 
 | Message | Cause | Read |
 | --- | --- | --- |
-| `SandboxDriverUnavailableError: resolved sandbox tier 'tier-2-container' requires an execution driver`, after `RT-FAIL-BOOTSTRAP` | An MCP client resolves to a sandbox tier that has no driver on this deployment, for example a URL client declared `LOCAL_MUTATION`. The runtime refuses every run at its start, with exit code 4 (*witnessed*). Fix: `arhugula mcp remove <name>`. | [Declare how far you trust an MCP server](security-and-isolation.md#declare-how-far-you-trust-an-mcp-server) |
+| `SandboxDriverUnavailableError: resolved sandbox tier 'tier-2-container' requires an execution driver`, after `RT-FAIL-BOOTSTRAP` | An MCP client resolves to a sandbox tier that has no driver on this deployment, for example a URL client declared `LOCAL_MUTATION`, or a client at trust level `L2_SANDBOX_ALL`, which needs tier 4. Only a client labelled `READ_ONLY` runs. The runtime refuses every run at its start, with exit code 4 (*witnessed* for `LOCAL_MUTATION`). Fix: `arhugula mcp remove <name>`. | [Know which tool servers run today](workflows.md#know-which-tool-servers-run-today) |
 | `RT-FAIL-PROMPT-INJECTION-CONFLICT` | A step payload carries a system prompt while a prompt version is active. | [Write a step payload for your provider family](authoring.md#write-a-step-payload-for-your-provider-family) |
 | `RT-FAIL-PROMPT-VERSION-UNAPPROVED` | The selected prompt version is not on the approved list of a deployment that requires approval. | [Approve a version](prompts-skills-validators.md#approve-a-version) |
 | `RT-FAIL-CLI-DAEMON-RESULT` | The client of a daemon run got no result, for example after its wait of one hour. | [Run workflows through the daemon](operate.md#run-workflows-through-the-daemon) |
@@ -328,7 +341,7 @@ failure:   RT-FAIL-WORKFLOW
 detail:    workflow execution returned status='failed' with fail_class="step-failure: RT-FAIL-HITL-GATE-REJECTED: operator rejected HITL gate at placement='pre-action': 'noninteractive: no operator terminal'"
 ```
 
-- **Cause:** the run reached an approval gate and had no terminal to ask in. That happens in a pipe, a scheduled job, or the shell of an agent CLI. A gate without a terminal is rejected (*upstream limit*).
+- **Cause:** the run reached an approval gate and had no terminal to ask in. That happens in a pipe, a scheduled job, or the shell of an agent CLI. A gate without a terminal is rejected (*upstream limit*). The gate can belong to a tool step, or to a tool call that a model decided on.
 - **Fix:** run the workflow in your own terminal and answer the gate there.
 - **Prevent:** `arhugula policy show` tells you which tool calls a gate approves without asking. Everything else needs a person at a terminal.
 - **Status:** *witnessed* on the runtime's own `harness run`, in a run recorded before the kit wrapped it. Through `arhugula run` the same line is in a run log of the development deployment, not in a named evidence file.
@@ -430,7 +443,7 @@ served by claude_code/sonnet, not by ollama/no-such-model:1b: ollama failed (Typ
 - **Cause:** the provider you named failed, and the fallback served the step. Read the text after `failed (` to see why.
 - **Fix:** repair the provider that failed, then run again. `arhugula provider check` shows each provider's sign-in and models.
 - **Prevent:** read the `served by` line of every run that names a provider with `--provider`. A run with no such line was served by the provider you named.
-- **Older pin:** a deployment installed before pin `2e1ba1f7` refuses Codex's start-up notice "Code Mode is unavailable because code-mode host is disabled" as an unrecognised item. The fallback then serves every Codex run. Run `arhugula upgrade`.
+- **Older pin:** a deployment installed before upstream commit `2e1ba1f7` refuses Codex's start-up notice "Code Mode is unavailable because code-mode host is disabled" as an unrecognised item. The fallback then serves every Codex run. Run `arhugula upgrade`.
 - **Status:** *witnessed* in a run on the development deployment.
 
 ### A stored model is no longer offered
@@ -702,4 +715,5 @@ Upstream documents and sources, under `<home>/upstream`:
 - `harness-runtime/src/harness_runtime/lifecycle/prompt_selection.py`: `RT-FAIL-PROMPT-SELECTION-UNAUTHORED`.
 - `harness-runtime/src/harness_runtime/lifecycle/operator_input.py` and `hitl_gate_composer.py`: the two gate rejections.
 - `harness-runtime/src/harness_runtime/cli/app.py`: the daemon connection failure.
-- `harness-runtime/src/harness_runtime/lifecycle/mcp_client_host.py`: the MCP client shutdown that raises `CancelledError`.
+- `harness-runtime/src/harness_runtime/lifecycle/mcp_client_host.py`: the MCP client shutdown order that pull request 1760 fixed.
+- `harness-runtime/src/harness_runtime/lifecycle/llm_dispatch.py`: the text-only refusal of a step that lists tools.

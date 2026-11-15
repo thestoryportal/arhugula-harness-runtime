@@ -45,15 +45,20 @@ The retrieval index is built from them and the runtime rebuilds it when it is mi
 
 The runtime picks one access mode for each model call, in this priority order:
 
-1. **Memory tools.** The model calls `memory.*` tools to look things up. This needs a provider that supports tool calls, and a policy that allows it.
+1. **Memory tools.** The model calls `memory.*` tools to look things up. This needs a provider that supports tool calls, a provider family that matches the memory scope, and a policy that allows it.
 2. **The prompt packet.** The runtime adds a small, read-only summary of retrieved records to the prompt. The packet stays within a token budget, 1200 tokens by default.
 3. **Provider-native memory.** The provider's own remote memory API. The runtime uses it only when you turn on the feature `memory-native`.
 4. **No memory access.** This applies when policy or capability denies every other mode.
 
-The runtime selects memory tools for `openai` and `ollama` only.
+The runtime offers memory tools on `openai` and `ollama`, and `anthropic` has its own path for them.
 A command-line provider (`claude_code`, `codex`, `antigravity`) sends text only, so its calls get the prompt packet.
-Calls to `anthropic` get the prompt packet too.
-This is read in the runtime's code, in `harness-cp/src/harness_cp/memory_access_mode.py`. A model's call of a memory tool was not witnessed for each provider.
+The family of the serving provider must also match the family of the memory scope, which is the primary family of the fallback chain.
+
+With `--provider ollama` while the chain's primary was `claude_code`, the families differed, and the memory tools were not offered: the span read `degraded_serve` with the reason `provider_family_scope_mismatch` (*witnessed*).
+The rest is read in the runtime's code, in `harness-cp/src/harness_cp/memory_access_mode.py` and `harness-runtime/src/harness_runtime/lifecycle/llm_dispatch.py`. A model's call of a memory tool was not witnessed for each provider.
+
+The answer `packet+tools` to question 10 writes `standard_tools_enabled = true` under `[runtime.memory]`, and the spans of runs with that default name the mode `standard_memory_tools` (*witnessed*). That this key alone selects the mode is not established.
+The other tools that a model can call, from the servers you connect, are in [Give agents tools](workflows.md#give-agents-tools).
 
 `init` question 10 asks which modes you want.
 It appears only when memory is enabled.
@@ -376,5 +381,6 @@ Upstream documents and code:
 
 - `upstream/docs/memory-layer-readme.md`
 - `upstream/docs/memory-substrate.md`
+- `upstream/harness-runtime/src/harness_runtime/lifecycle/llm_dispatch.py`: which providers get memory tools
 - `upstream/harness-runtime/src/harness_runtime/admin/memory_operator.py`
 - `upstream/harness-runtime/src/harness_runtime/memory_promotion.py`

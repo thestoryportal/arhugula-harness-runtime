@@ -56,7 +56,7 @@ Three markers, always in italics, tell you how far to trust a statement:
 - **One command checks sign-in:** `arhugula provider check` asks each enabled provider's own tool whether it is installed and signed in.
 - **Subscription calls carry no price:** a call through a signed-in command-line tool writes no cost entry (*upstream limit*, by design).
 - **Models come from each tool's own list:** `arhugula provider models` shows what your sign-in offers. `provider check` and `doctor` report a model that a tool no longer offers.
-- **Codex serves a run at this pin:** three runs with `--provider codex` were each served by Codex, with no error (*witnessed*). When the provider you name fails, the fallback serves the step and the run prints a `served by` line.
+- **Codex serves a run from upstream commit `2e1ba1f7…` on:** three runs with `--provider codex` at that commit were each served by Codex, with no error (*witnessed*). When the provider you name fails, the fallback serves the step and the run prints a `served by` line.
 
 Details: [providers](docs/providers.md).
 
@@ -73,7 +73,7 @@ Details: [providers](docs/providers.md) and [configure](docs/configure.md).
 
 - **Six topologies ship:** single-threaded-linear, parallelization, orchestrator-workers, evaluator-optimizer, hierarchical-delegation and decentralized-handoff. Upstream has an example of each, and `arhugula workflow list` shows them.
 - **A manifest from a topology:** `arhugula workflow new <topology> --name <name>` writes a manifest that loads in the runtime (*kit extension*).
-- **Isolated agent steps:** each agent step is one short provider call. It has no session and a scrubbed environment. With Claude Code and Codex it also has no tools of its own. Antigravity keeps its own tools and starts in the project's repository: see [What each call can see](docs/providers.md#what-each-call-can-see).
+- **Isolated agent steps:** each agent step is one short provider call. It has no session and a scrubbed environment. With Claude Code and Codex it also has no tools of its own. Antigravity starts in the project's repository, and no flag switches its tools off: see [What each call can see](docs/providers.md#what-each-call-can-see). To run an agent that edits files or runs commands, add it as a custom provider: [Run an agent that acts with its own tools](docs/providers.md#run-an-agent-that-acts-with-its-own-tools).
 - **One process, no multiplexer:** the agents of a topology run concurrently inside one process. No terminal multiplexer is involved.
 - **No plans from replies:** the runtime does not build a worker plan from a lead model's reply (*upstream limit*; upstream issue: see known-gaps).
 
@@ -82,7 +82,8 @@ Details: [workflows](docs/workflows.md).
 ### Approval gates
 
 - **A gate asks you:** a gated tool call stops and asks at your terminal: `answer (approve | edit | reject | respond | hold | cancel):`.
-- **Policy decides what asks:** `arhugula policy show` lists what a gate approves without asking, and `arhugula policy set` changes it.
+- **Placements gate tool steps only:** a workflow's `hitl_placements` and `tool_filter` place the gate of a tool step. For a tool call that a model decides on, the runtime reads neither. The persona, the server's labels and the policy decide: see [Set what a gate approves without asking](docs/security-and-isolation.md#set-what-a-gate-approves-without-asking).
+- **Policy decides what asks:** `arhugula policy show` lists what a gate approves without asking, and `arhugula policy set` changes it. With the default policy, a tool of a server labelled read-only is approved without asking, so the shipped `gated-tool.toml` asks nobody until you run `arhugula policy set solo-floor-auto off` (*witnessed*).
 - **Approve and hold work:** `approve` ended in `status: completed`. `hold` ended in `status: paused`, and `arhugula gate approve <manifest>` then completed the run (*witnessed*).
 - **Hold needs two settings:** `arhugula pause enable` and `arhugula webhook set <url>`.
 - **No terminal, no approval:** a run without a terminal rejects its gate (*upstream limit*).
@@ -118,9 +119,16 @@ Details: [memory](docs/memory.md).
 
 ### MCP tools
 
-- **Tool servers by verb:** `arhugula mcp add` connects a Model Context Protocol (MCP) tool server with a trust level and a blast radius. `arhugula mcp test` lists its tools. A `stdio` server needs isolation tier 3 and the virtual machine: see [Give your own MCP client a sandbox](docs/security-and-isolation.md#give-your-own-mcp-client-a-sandbox). It also fails every run while an HTTP client is configured: see [stdio and HTTP MCP clients together](docs/troubleshooting.md#cancellederror-cancelled-via-cancel-scope-stdio-and-http-mcp-clients-together).
+- **Give agents tools:** [Give agents tools](docs/workflows.md#give-agents-tools) says which steps use tools, which providers run a model's tool calls, which tools a new deployment has, and how to add more.
+- **A model runs tools on two providers:** an inference step runs the tool calls of a model on `ollama` (*witnessed*) and `anthropic`. `openai` is offered the tools, but its calls are not run. The command-line providers take text only, and a step that lists tools falls over to the next provider of the fallback chain.
+- **A new deployment has no general-purpose tool:** it has memory tools and the demonstration servers, and no file, shell, web or git tool.
+- **Tool servers by verb:** `arhugula mcp add` connects a Model Context Protocol (MCP) tool server with a trust level and a blast radius. `arhugula mcp test` lists its tools. The labels are your declaration, and the runtime checks neither one.
+- **Only some servers can run today:** an HTTP server labelled `READ_ONLY` runs. Any other label makes every run fail at its start, and a `stdio` server needs isolation tier 3 and the virtual machine: see [Know which tool servers run today](docs/workflows.md#know-which-tool-servers-run-today).
+- **A step's `tools` list limits nothing** on `ollama` and `anthropic`: every registered tool is offered to the model (*witnessed*).
 - **An example server:** `examples/mcp/notes_server.py` offers the tools `notes.read` and `notes.write`.
 - **A daemon with a limit:** `arhugula daemon start` runs the harness as a service. Its own MCP endpoint is a Unix socket, which MCP clients such as Claude Code cannot connect to (*upstream limit*). `arhugula daemon expose` prints the working alternative.
+
+- **An agent that acts, through a custom provider:** you can add a subscription agent that edits files or runs commands with `arhugula provider add`. The harness then sees the step and its reply only. The agent's own permission settings are the only control: see [Run an agent that acts with its own tools](docs/providers.md#run-an-agent-that-acts-with-its-own-tools) (*witnessed* with Claude Code).
 
 Details: [configure](docs/configure.md) and [operate](docs/operate.md).
 
@@ -350,15 +358,15 @@ The reason is upstream's own marking: the Codex profile is HELD, because the CLI
 | [Operate](docs/operate.md) | Day-to-day work: runs, status, gates, resume, the daemon, logs, state backups and exit codes. |
 | [Troubleshooting](docs/troubleshooting.md) | Failure messages, with the cause and the fix for each. |
 | [Projects](docs/projects.md) | Attaching a repository, and what the harness writes into it. |
-| [Providers](docs/providers.md) | Each provider: sign-in, enabling, and routing between providers. |
-| [Workflows](docs/workflows.md) | The manifest, the six topologies, gates in a workflow, and how agents execute. |
+| [Providers](docs/providers.md) | Each provider: sign-in, enabling, routing between providers, and agents that act with their own tools. |
+| [Workflows](docs/workflows.md) | The manifest, the six topologies, how agents get tools, gates in a workflow, and how agents execute. |
 | [Authoring](docs/authoring.md) | What an agent inside a workflow sees, and how to write for it. |
 | [Prompts, skills and validators](docs/prompts-skills-validators.md) | The verbs that manage prompt versions, skills and validator bindings. |
 | [Configure](docs/configure.md) | The generated config, every named feature, and the verbs that set each key. |
 | [Memory](docs/memory.md) | What memory stores, how you review it, and the memory verbs. |
 | [Observability](docs/observability.md) | The local span store, the VM, the trace stack, dashboards, alerts and logs. |
 | [Evaluation](docs/evaluation.md) | Checks inside a run, the holdout loop and drift checks. |
-| [Security and isolation](docs/security-and-isolation.md) | Secrets, audit signing, gate policy, MCP trust and the isolation tiers. |
+| [Security and isolation](docs/security-and-isolation.md) | Secrets, audit signing, who approves a tool call, MCP trust and the isolation tiers. |
 | [Agents](docs/agents.md) | How an agent CLI installs and operates the deployment for you. |
 | [Upgrade](docs/upgrade.md) | Moving to another pin, and rolling back. |
 | [Known gaps](docs/reference/known-gaps.md) | Upstream limits, kit extensions and platform limits. |

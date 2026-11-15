@@ -1,0 +1,35 @@
+# An example workflow whose one step runs on an agent that acts with its own tools
+# (docs/providers.md, "Run an agent that acts with its own tools").
+#
+# The provider `claude_agent` is one you add yourself. It runs a command-line agent
+# with that tool's own permission settings, in the project directory:
+#   arhugula provider add claude_agent --command "$(command -v claude)" \
+#     --args='--print --model {model} --permission-mode acceptEdits --output-format text' \
+#     --model sonnet --family anthropic
+# The harness sees the step and its reply. It does not see, gate or record the single
+# tool calls the agent makes: the agent's own permission mode is the only control.
+version = 1
+
+[workflow]
+workflow_id = "agent-acts"
+workload_class = "software-engineering"
+persona_tier = "solo-developer"
+engine_class = "pure-pattern-no-engine"
+topology_pattern = "single-threaded-linear"
+layer_budgets = []
+hitl_placements = []
+per_step_overrides = {}
+fallback_chain = { primary = { provider = "claude_agent", model = "sonnet", family = "anthropic" }, same_family = [], cross_family = [] }
+
+[default_model_binding]
+provider = "claude_agent"
+model = "sonnet"
+
+[[steps]]
+step_id = "act"
+step_kind = "inference-step"
+
+[steps.step_payload]
+messages = [{ role = "user", content = "Create a file named agent-proof.txt in the current directory containing exactly the line: written by an agent. Then reply with the single word: done" }]
+tools = []
+params = {}

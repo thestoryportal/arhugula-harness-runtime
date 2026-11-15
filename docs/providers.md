@@ -21,6 +21,7 @@ Nothing here is installed for you: see [the dependencies](install.md#dependencie
 - [Change the routing](#change-the-routing)
 - [Choose a model and a thinking level](#choose-a-model-and-a-thinking-level)
 - [Add your own provider](#add-your-own-provider)
+- [Run an agent that acts with its own tools](#run-an-agent-that-acts-with-its-own-tools)
 - [Review with a second model](#review-with-a-second-model)
 - [Know what a run costs](#know-what-a-run-costs)
 - [Sources](#sources)
@@ -86,6 +87,8 @@ The Antigravity call does not: read the note under it before you route work to i
 The exact command lines follow.
 In them, `<model>` is the routed model and `<prompt>` is the step's prompt.
 
+All three providers take and return text only, so the runtime refuses a step that lists tools for them: see [Choose how a step uses a tool](workflows.md#choose-how-a-step-uses-a-tool).
+
 For Claude Code and Codex, the command the runtime starts is a small script that the kit generates: `<home>/bin/provider-claude_code` or `<home>/bin/provider-codex` (*kit extension*).
 The script turns a model written `<model>@<level>` into the tool's own model and thinking-level options, and it passes every other argument through unchanged.
 The kit removes from `<home>/bin` only the wrapper files it generated itself; a `provider-*` file of your own stays.
@@ -119,7 +122,8 @@ codex exec --json --ephemeral --skip-git-repo-check --sandbox read-only
 
 The prompt goes in on standard input; the final `-` tells Codex to read it there.
 The call ignores your Codex configuration, runs in a read-only sandbox and switches off every tool entry point by name.
-At upstream commit `2e1ba1f764be27601441936692da2b6c30d61f7c`, three runs with `--provider codex` were each served by Codex, and the model-call spans named `gpt-6.1-sol@low`, `gpt-6.1-sol@high` and `gpt-5.6-luna` with no error (*witnessed*).
+From upstream commit `2e1ba1f764be27601441936692da2b6c30d61f7c` on, the runtime accepts Codex's reply.
+Three runs with `--provider codex` at that commit were each served by Codex, and the model-call spans named `gpt-6.1-sol@low`, `gpt-6.1-sol@high` and `gpt-5.6-luna` with no error (*witnessed*).
 
 ### Antigravity
 
@@ -131,6 +135,7 @@ The prompt is an argument.
 `<seconds>` is the provider's call timeout, 120 by default.
 `--sandbox` is the only restriction on this command line; `agy --help` describes it as "a sandbox with terminal restrictions".
 No flag switches off the Antigravity tool's own tools (*upstream limit*).
+Whether `--print --sandbox` runs those tools is not established, because no call was made to find out.
 
 ### What each call can see
 
@@ -522,7 +527,106 @@ You cannot remove the default or the fallback provider: change the chain first.
 `arhugula provider add --help` lists the other options, such as `--prompt-transport` and `--response-format`.
 A custom command receives only `{model}` and `{prompt}`, so put a thinking option in its `--args`.
 
+A custom provider is a text provider like the built-in command-line ones: a step that lists tools is refused for it.
+The command itself can still be an agent that acts: see [Run an agent that acts with its own tools](#run-an-agent-that-acts-with-its-own-tools).
+
 The same route reaches an OpenAI-compatible server (LM Studio, vLLM, OpenRouter) through a command of yours, because the runtime has no setting for such an endpoint (*upstream limit*).
+
+## Run an agent that acts with its own tools
+
+This section is for the operator who wants a subscription agent, such as Claude Code, to edit files, run commands or use its own tool servers inside a workflow step.
+After reading it you can add such an agent as a custom provider, run a step on it, and say what controls it.
+Read the trade first: this route removes the harness's gates and records.
+
+### Know why the built-in providers cannot act
+
+The built-in providers do not let an agent act on its own decision, except possibly Antigravity.
+This table shows how each one is held back:
+
+| Provider | How its tools are controlled | Working directory |
+| --- | --- | --- |
+| `claude_code` | Switched off with `--tools ""`, together with `--permission-mode dontAsk` and `--permission-prompts none`. | A new empty directory under `/tmp`, removed after the call. |
+| `codex` | `--sandbox read-only`, every tool entry point switched off with `--disable`, and `-c web_search="disabled"`. The runtime also refuses a `command_execution`, `mcp_tool_call`, `file_change`, `web_search` or unknown item in Codex's output, with the message "tool use is not supported on this route". | A new empty directory under `/tmp`, removed after the call. |
+| `antigravity` | `--sandbox` only. No flag switches its tools off, and the runtime refuses nothing after the call. Whether `--print --sandbox` runs its own tools is not established. | The directory the run starts in, which is the project's repository. |
+
+The arguments of these three providers are fixed in the runtime's code.
+`arhugula provider set` changes only `timeout_seconds` and `auth_check`, so you cannot loosen a built-in provider.
+A custom provider is the way to run an agent that acts.
+
+### Know the trade before you add an agent
+
+An agent behind a custom provider acts, and the harness does not control how.
+
+- **The harness sees the step and its reply, and nothing else.** It does not see, gate, sandbox or record the single tool calls that the agent makes. No gate asks you, and no span or audit entry records them (read in the code, not run).
+- **The agent's own permission settings are the only control.** They are the CLI's permission mode, its allowed-tools and disallowed-tools options, and its own MCP configuration. These options belong to the CLI: read its help, for example `claude --help`.
+- **The agent runs in the project directory, as you.** The runtime starts the command in the directory it runs in, which is the project's repository. The command uses the tool's own sign-in, which is yours. The harness adds no sandbox.
+- **A mode that skips every permission check gives the agent your full access to the project directory.** The Claude Code help describes `--dangerously-skip-permissions` as "Bypass all permission checks" and recommends it "only for sandboxes with no internet access". Treat the permission mode `bypassPermissions` with the same care.
+
+### Add the agent and run a step on it
+
+Do these steps in order.
+The run writes a file into your project, so use a project whose files you can restore.
+
+1. **Add the agent as a provider.** The command that follows adds Claude Code with the permission mode `acceptEdits`. `$(command -v claude)` supplies the absolute path that `--command` needs, and `--args=` carries the arguments in one string. `{model}` becomes the step's model.
+
+   ```sh
+   arhugula provider add claude_agent --command "$(command -v claude)" --args='--print --model {model} --permission-mode acceptEdits --output-format text' --model sonnet --family anthropic
+   ```
+
+   The command answered (*witnessed*):
+
+   ```text
+   added and enabled claude_agent; models: sonnet (default sonnet).
+   check it:   arhugula provider check
+   try it:     arhugula run minimal.toml --provider claude_agent
+   ```
+
+2. **Copy the example workflow into the project.** The step of `examples/workflows/agent-acts.toml` asks the agent to create a file named `agent-proof.txt` with one line in it.
+
+   ```sh
+   cp <home>/kit/examples/workflows/agent-acts.toml <project-path>/workflows/
+   ```
+
+3. **Run it on the new provider.** Pass `--provider`, because the manifest's own chain is a label and does not choose the provider.
+
+   ```sh
+   arhugula run agent-acts.toml --project <project> --provider claude_agent
+   ```
+
+4. **Check the result.** The file that the agent made is in your project directory.
+
+   ```sh
+   cat <project-path>/agent-proof.txt
+   ```
+
+The run printed this (*witnessed*):
+
+```text
+override:  every step dispatches first to claude_agent/sonnet; the config's fallback chain applies if that candidate fails
+status:    completed
+```
+
+The step completed, and the model-call span names `claude_agent`.
+The file existed in the project directory afterwards, and it held the line `written by an agent` (*witnessed*).
+The step must list no tools, as the example does with `tools = []`, because a custom provider is a text provider.
+The agent uses its own tools instead.
+
+### Set what the agent may do
+
+The options of the agent are the CLI's own, so read its help for your version.
+These names come from `claude --help`:
+
+| Option | What the help says |
+| --- | --- |
+| `--permission-mode <mode>` | The permission mode for the session. The choices are `acceptEdits`, `auto`, `bypassPermissions`, `manual`, `dontAsk` and `plan`. |
+| `--allowedTools`, `--allowed-tools <tools...>` | A comma or space separated list of tool names to allow. |
+| `--disallowedTools`, `--disallowed-tools <tools...>` | A comma or space separated list of tool names to deny. |
+| `--tools <tools...>` | The list of available tools from the built-in set. `""` disables all tools. |
+| `--mcp-config <configs...>` | Loads MCP servers from JSON files or strings. |
+
+Put the options you choose in the provider's `--args`.
+Only Claude Code was run this way.
+For another agent CLI, the same route applies, and nothing on this page was run for it.
 
 ## Review with a second model
 
@@ -587,6 +691,7 @@ Kit modules:
 - `lib/arhugula_kit/servedby.py`
 - `examples/providers/echo-provider`
 - `examples/workflows/two-agents.toml`
+- `examples/workflows/agent-acts.toml`
 - `lib/arhugula_kit/verbs_config.py`
 - `lib/arhugula_kit/render.py`
 - `lib/arhugula_kit/questions.py`
@@ -595,9 +700,12 @@ Kit modules:
 Upstream sources, relative to the home:
 
 - `upstream/harness-runtime/src/harness_runtime/lifecycle/external_cli_provider.py`
+- `upstream/harness-runtime/src/harness_runtime/lifecycle/llm_dispatch.py`: the text-only refusal of a step that lists tools
 - `upstream/harness-runtime/src/harness_runtime/cli/app.py`
 - `upstream/harness-cp/src/harness_cp/per_role_catalog.py`
 - `upstream/harness-cp/src/harness_cp/workflow_manifest_entry.py`
 - `upstream/docs/how-to-operate-runtime.md`
 - `upstream/docs/how-to-deploy.md`
 - `upstream/examples/README.md`
+
+The options of Claude Code in [Set what the agent may do](#set-what-the-agent-may-do) come from its own help, `claude --help`.

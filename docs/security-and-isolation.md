@@ -2,7 +2,7 @@
 
 This page is for the operator who runs a deployment and for the reviewer who judges it.
 After reading it you can keep secrets out of files, sign and verify the audit ledger, set what a gate approves without asking, and run tool calls in a sandbox.
-You also learn what each mechanism does not protect against.
+You also learn which tool calls a gate covers and what each mechanism does not protect against.
 Tool calls go to tool servers that speak the Model Context Protocol (MCP).
 
 This page describes kit version 0.1.0.
@@ -40,9 +40,10 @@ None of them protects against a person or a program that already runs as your ma
 | Private files and directories | Stops other users of the Mac from reading keys, the Grafana password, state, backups and run logs. | It does not encrypt anything. It does not cover the configuration. |
 | Audit hash chain | Shows an entry that was changed or removed while the hashes after it stayed as they were. | It is not a signature. Whoever can write the ledger can recompute the hashes, or remove entries from the end. |
 | Audit signing | Makes a forged entry need the signing key. | It does not protect a ledger if the key file is copied, and every program that runs as you can read that file. It does not show entries removed from the end. |
-| Approval gates | Ask you before a tool call that the workflow puts a gate in front of. | They do not cover a tool call that no gate names. They do not ask for calls the policy approves without asking. |
-| Isolation tier 3 | Runs a tool call in a gVisor container with no network, inside the virtual machine. | It does not sandbox provider calls or tier 1 tool calls. It does not sandbox the MCP server process, which still starts on the Mac. |
+| Approval gates | Ask you before a tool step that a placement of the workflow names, and before a model's tool call when the gate level says ask. | They do not cover a tool step that no placement names. They do not ask for calls that the policy approves without asking. They do not look inside a tool. |
+| Isolation tier 3 | Runs a tool call in a gVisor container with no network, inside the virtual machine. | It does not sandbox provider calls or tier 1 tool calls. It does not sandbox the MCP server itself: a container command answers the call, not the server. Whether the runtime also starts the server on the Mac is not established. |
 | Provider-call isolation | Removes API keys from the environment. For Claude Code and Codex it also switches the provider's tools off. | It does not hide your home directory from the provider's program. It passes no flag that switches Antigravity's tools off. |
+| A custom provider that runs an agent | Nothing. The harness sees the step and its reply only. | It does not see, gate, sandbox or record the agent's own tool calls. See [Run an agent that acts with its own tools](providers.md#run-an-agent-that-acts-with-its-own-tools). |
 | Routing and the fallback chain | Choose which provider serves a step. | They are not a data boundary. A step that fails on its provider goes to the next provider of the chain with the same prompt. `--provider` only puts a provider in front of the whole chain. To keep every step on one provider, make it the chain's only entry: `arhugula routing chain set <binding> --fallback none`. See [Change the routing](providers.md#change-the-routing). |
 
 ## Keep secrets out of files
@@ -68,7 +69,7 @@ These rules hold for keys:
 - **Subscription providers use no key.** Claude Code, Codex and Antigravity each keep their own sign-in. The deployment never reads it.
 - **An MCP credential lives in the keychain too.** `arhugula mcp add --auth-secret-name <entry>` names a keychain entry; the credential itself stays out of the configuration. The runtime sends the credential as a bearer token, and refuses the flag for a `stdio` client.
 
-No `arhugula` verb stores an MCP credential.
+No `arhugula` verb stores an MCP credential, and `arhugula mcp test` sends none, so it cannot test a server that needs one.
 Create the keychain entry in your own terminal; [Keep secrets out of TOML](configure.md#keep-secrets-out-of-toml) explains the command:
 
 ```sh
@@ -307,13 +308,45 @@ A new deployment never needs it.
 ## Set what a gate approves without asking
 
 An approval gate stops a tool call and asks you.
-A gate exists only where the workflow places one: the `hitl_placements` line of the workflow file names the tools it covers.
-A tool call that no placement names runs without asking, whatever the policy says.
-The policy decides which calls a gate approves on its own, without asking.
-The policy applies to workflows that run as the `solo-developer` persona.
+This section says which calls a gate covers, what makes it ask, and how to get each outcome you may want.
+Two cases differ, so read the first table before the rest.
 
-The gate floor and this policy read that persona from the workflow file's `persona_tier`.
-They do not read the deployment's `persona_tier` setting, which decides trace sampling, trace redaction and prompt-version approval, and the runtime does not compare the two.
+### Know which calls a gate covers
+
+A tool call reaches a gate in one of two ways.
+The workflow can name the tool in a tool step, or a model can decide to call it.
+
+| Question | A tool step | A tool call that a model decides on |
+| --- | --- | --- |
+| What it is | The workflow names one tool and its arguments. | A model, in an inference step on `ollama` or `anthropic`, chooses to call a tool. |
+| What places the gate | The `hitl_placements` of the workflow. A step that no placement matches has no gate. | Nothing. The runtime evaluates every call and reads no placement. |
+| What `tool_filter` does | It limits a placement to the tool names you list. | Nothing. The runtime does not read it. |
+| Which persona it reads | The workflow's `persona_tier`. | The deployment's `persona_tier`, which is `solo-developer` unless the feature `persona-team` is on. |
+| How long the gate waits | The placement's `timeout`, or 900 seconds. | It has no timeout of its own. The step deadline bounds it. |
+
+The deployment's `persona_tier` decides trace sampling, trace redaction and prompt-version approval.
+The runtime does not compare it with the workflow's `persona_tier`, so the two can differ.
+
+Once a gate applies, its level is the highest of three floors.
+The level `auto` skips the gate, `ask` asks you at the terminal, and `deny` refuses the call.
+A tool that no connected server registers gets `deny`.
+
+| Floor | Values | What can lower it |
+| --- | --- | --- |
+| The server's blast radius | `READ_ONLY` is `auto`. The other three are `ask`. | `local-mutation-floor-auto` lowers `LOCAL_MUTATION` to `auto`. Nothing lowers `EXTERNAL_REVERSIBLE` or `EXTERNAL_IRREVERSIBLE`. |
+| The persona | `ask`, for all three personas. | `solo-floor-auto` lowers it to `auto`, at the `solo-developer` persona only. |
+| The server's trust level | `L0_REFUSE_REMOTE` is `deny`. `L1_SIGNED_PINNED` and `L2_SANDBOX_ALL` are `ask`. `L3_ALLOW_WITH_AUDIT` is `auto`. | Nothing. |
+
+With the default policy, every tool of a server at `L3_ALLOW_WITH_AUDIT` and `READ_ONLY` gets the level `auto`.
+That holds for a tool step whose placement matches, and for a model's tool call.
+In a tool step the gate event read `level=auto` and `required=false`, and the tool ran with nobody asked (*witnessed*).
+In a model's tool call no gate event appeared at all (*witnessed*).
+A tool step that the policy approves writes an auto-approve audit entry.
+
+### Read the policy
+
+The policy is the pair of settings that lower the persona floor and the blast floor.
+Read it first:
 
 <!-- witness -->
 ```sh
@@ -330,10 +363,12 @@ What an approval gate approves without asking (solo-developer persona):
 With a setting off, the gate asks you in the terminal. A run without a terminal rejects the gate.
 ```
 
-| Setting | Default | When it is on |
+The policy has exactly two settings, and both apply only at the `solo-developer` persona:
+
+| Setting | Default | What it does when it is on |
 | --- | --- | --- |
-| `solo-floor-auto` | on | A gate approves read-only tool calls without asking. |
-| `local-mutation-floor-auto` | off | A gate also approves tool calls that change local files. |
+| `solo-floor-auto` | on | It lowers the persona floor to `auto`. A call to a read-only server at trust level `L3_ALLOW_WITH_AUDIT` then needs no answer. |
+| `local-mutation-floor-auto` | off | It lowers the blast floor to `auto` for a `LOCAL_MUTATION` server. No client can use this on this deployment, because such a client needs tier 2, which the kit does not provide. |
 
 Change a setting with `arhugula policy set`:
 
@@ -341,21 +376,75 @@ Change a setting with `arhugula policy set`:
 arhugula policy set solo-floor-auto off
 ```
 
-With `solo-floor-auto` off, a gated tool call asks at the terminal (*witnessed*).
+With `solo-floor-auto` off, a gated tool step asks at the terminal (*witnessed*).
 The answer `approve` let the run complete.
 Answer within 15 minutes: the gate waits 900 seconds, and the kit's step deadline is 960 seconds. [Operate: answer a gate](operate.md#answer-an-approval-gate-at-the-terminal) explains the limits.
 
-Four limits apply:
+### Choose the approval you want
 
-- **No setting approves external changes.** The policy has no switch for tool calls that change something outside the Mac. It cannot make a gate approve them.
-- **A run without a terminal rejects a gate.** The runtime answers `noninteractive: no operator terminal` (*upstream limit*).
-- **The policy does not see what a tool does.** The runtime does not inspect a tool. It gives every tool of a client the blast radius that you declared with `--blast-radius`, and a gate follows that declaration: see [Declare how far you trust an MCP server](#declare-how-far-you-trust-an-mcp-server). To make a gate ask before a tool that is declared `READ_ONLY`, switch `solo-floor-auto` off.
-- **The workflow file decides where gates are.** Whoever writes the workflow chooses its gates and its `persona_tier`, so read a workflow you did not write before you run it.
+The table gives, for each outcome, the setting that produces it.
+The two cases of the first table differ, so each outcome has two columns.
+
+| Outcome | For a tool step | For a tool call that a model decides on |
+| --- | --- | --- |
+| (a) No human approval at all | The default. With no placement there is no gate. With a placement and `solo-floor-auto` on, a read-only `L3_ALLOW_WITH_AUDIT` server gets `auto` (*witnessed*). | The default. With `solo-floor-auto` on, a call to such a server passes with no gate (*witnessed*). |
+| (b) Approval only for chosen tools | Put a `pre-action` placement with `tool_filter` on the tools, and switch `solo-floor-auto` off (*witnessed*). With the default policy the filter has no effect (*witnessed*). | Not possible per tool, because the runtime ignores `tool_filter`. Per server, register the server with `--trust L1_SIGNED_PINNED`: its trust floor is `ask` and nothing lowers it (read in the code, not run). |
+| (c) Approval for everything | Put a `pre-action` placement with no `tool_filter` in the workflow, and switch `solo-floor-auto` off. | Switch `solo-floor-auto` off. The persona floor is `ask`, so every call asks. |
+| (d) Auto-approval of calls that change things outside the machine | Not possible. | Not possible. |
+| (e) Approvals in a run with no terminal | Not possible. A call that asks is rejected (*witnessed*). | Not possible. |
+
+The commands behind the table are these:
+
+```sh
+arhugula policy set solo-floor-auto off
+arhugula policy set solo-floor-auto on
+arhugula mcp add <name> --url <url> --trust L1_SIGNED_PINNED
+```
+
+- **`policy set solo-floor-auto off`** makes (b) and (c) ask.
+- **`policy set solo-floor-auto on`** returns the default.
+- **`mcp add ... --trust L1_SIGNED_PINNED`** makes every call from a model to that server ask, and it makes the tool steps of that server ask once a placement matches them.
+
+Each outcome has a limit that no setting removes:
+
+- **(a) is the default, and it covers more than you may expect.** Under `solo-floor-auto` on, a server that you label `READ_ONLY` has every tool approved, including a tool that writes. The example server's `notes.write` appends to a file under that label (*witnessed*).
+- **(b) cannot be done per tool for a model's calls.** Choose per server, or use a tool step, whose placement can name the tool.
+- **(c) works only inside the answer window.** A gate waits for your answer, and the step deadline bounds the wait: 960 seconds in the kit's config.
+- **(d) does not exist.** The blast floors of `EXTERNAL_REVERSIBLE` and `EXTERNAL_IRREVERSIBLE` stay at `ask` under every setting. Those calls also need isolation tier 3 or 4, which no HTTP client can get here, so the runtime refuses every run while such a client is configured. You can get the effect only by labelling the server `READ_ONLY`, which is a false label. `local-mutation-floor-auto` reaches nothing here, because a `LOCAL_MUTATION` client needs tier 2.
+- **(e) is not available.** `arhugula run` takes an answer only at the terminal. Without a terminal on both standard input and standard error, every `ask` is rejected with `noninteractive: no operator terminal` (*witnessed*, *upstream limit*).
+
+One path in the code does not block: a gate goes to a webhook, and the run pauses.
+It exists only for the `reconciler-loop` engine class at the solo persona, and it needs durable pause and a webhook.
+The model's tool loop has no timeout and no pause.
+Whether this path works on this deployment is not established.
+
+The answer `hold` is a different thing: you type it at a terminal, and it lets you answer later.
+[Hold a gate and answer it later](workflows.md#hold-a-gate-and-answer-it-later) describes it.
+
+### Know what each setting controls
+
+| Setting | It controls | It does not control |
+| --- | --- | --- |
+| `hitl_placements` | Where a tool step has a gate. | A tool call that a model decides on. |
+| `tool_filter` | Which tool steps a `pre-action` placement matches. It matches only a tool step whose `tool_id` you list. | An inference step or a model's tool call. |
+| `default_gate_level` | The floor of a child workflow, and a check of handoffs. | A top-level step. It has no effect there. |
+| `solo-floor-auto`, `local-mutation-floor-auto` | The persona floor and the blast floor, at the `solo-developer` persona. | The trust floor, and the two `EXTERNAL_*` blast floors. |
+| `--trust` of a client | The trust floor, and the tier: `L2_SANDBOX_ALL` needs tier 4. | Whether the server is what it claims to be. |
+| `--blast-radius` of a client | The blast floor and the lowest tier, for every tool of the client. | What a tool does. |
+| The step's `tools` list | Nothing on `ollama` and `anthropic`: it is not a permission control. | See [Know that a step's `tools` list limits nothing](workflows.md#know-that-a-steps-tools-list-limits-nothing). |
+| The isolation tier | How far a call is separated from your Mac. The runtime computes it from the transport, the trust level, the blast radius and the sandbox driver. | You cannot choose it directly. |
+
+Two more facts matter when you read a workflow:
+
+- **The workflow file decides where tool-step gates are.** Whoever writes the workflow chooses its placements and its `persona_tier`, so read a workflow you did not write before you run it.
+- **A child workflow inherits a floor.** The parent's `default_gate_level` becomes the lowest level of a gate in the child, and a `sub-agent-boundary` placement gates the handoff itself.
 
 ## Declare how far you trust an MCP server
 
 An MCP client connects the runtime to a tool server.
-When you add one, you declare two things about it.
+When you add one, you declare two labels about it: a trust level and a blast radius.
+The runtime does not inspect a tool, so every tool of a server carries the server's labels unchecked.
+The example server's `notes.write` writes a file while it carries the label `READ_ONLY` (*witnessed*).
 See every flag with:
 
 ```sh
@@ -371,9 +460,21 @@ The blast radius is the most the server's tools can change.
 Both values are your declaration: the kit passes them to the runtime unchanged.
 
 The kit writes the `--blast-radius` value to two settings of the client, `blast_radius` and `default_blast_radius`.
-The runtime gives every tool of the client the value of `default_blast_radius`.
+The runtime gives every tool of the client the value of `default_blast_radius`, and it never reads `blast_radius`.
 Its gates and its tier computation follow that value.
-So with the default policy a gate approves a tool of a `READ_ONLY` client without asking.
+So with the default policy a gate approves a tool of a `READ_ONLY` client without asking, for a tool step and for a model's call.
+No setting gives one tool of a server a different blast radius.
+
+The trust levels differ in what they do:
+
+| Trust level | Gate floor | Sandbox tier | What happens |
+| --- | --- | --- | --- |
+| `L0_REFUSE_REMOTE` | `deny` | none | The runtime refuses a remote server when you register it. |
+| `L1_SIGNED_PINNED` | `ask` | the blast-radius tier | It runs. Despite the name, the runtime checks no signature and pins no version at this pin (*upstream limit*). The level only raises the gate floor. |
+| `L2_SANDBOX_ALL` | `ask` | tier 4 or higher | It needs Kata or E2B. Without one, bootstrap fails and every run is refused. |
+| `L3_ALLOW_WITH_AUDIT` | `auto` | the blast-radius tier | It runs. This is the default. |
+
+The runtime's own per-server trust check, at its default policy, lets every client pass (*witnessed*: `trust_decision_reason` read `unknown_server_tier_floor_pass`).
 
 ### How the two values choose an isolation tier
 
@@ -423,8 +524,6 @@ With a blast radius other than `READ_ONLY`, it prints this after it adds the cli
 ```text
 note: the runtime runs a client that can change things at a sandbox tier above 1. This deployment provides tier 3 only, and only for stdio clients. While a client needs a tier it does not have, the runtime refuses every run at its start (SandboxDriverUnavailableError). To undo: arhugula mcp remove notes
 ```
-
-Not examined for this page: whether the runtime checks a signature or a version pin for `L1_SIGNED_PINNED`.
 
 ### Two features that make the policy explicit
 
@@ -496,9 +595,9 @@ The command does four things:
 The Docker engine is the one inside the virtual machine.
 Docker Desktop is not required and is never used.
 
-Keep one kind of MCP client configured at a time (*upstream limit*).
-`sandbox-echo` is a `stdio` client. With it and an HTTP client from `arhugula mcp add` both configured, every run serves its tool calls and then ends with an error and exit code 1 (*witnessed*).
-The known gaps describe [the limit on mixed MCP clients](reference/known-gaps.md#audit-and-isolation).
+`sandbox-echo` is a `stdio` client, and it works together with HTTP clients.
+With `sandbox-echo` and an HTTP client from `arhugula mcp add` both configured, both runs ended `status: completed` at the current pin (*witnessed*).
+A deployment on an older pin fails at the end of such a run: see [the troubleshooting entry](troubleshooting.md#cancellederror-cancelled-via-cancel-scope-two-tool-servers-on-an-old-pin).
 
 ### Give your own MCP client a sandbox
 
@@ -520,7 +619,7 @@ It sets no limit on memory, processor time or process count.
 It names no user, so the runner has the user the image sets.
 
 The runner in the image answers the tool call; the MCP server you registered does not.
-The runtime still starts that server on the Mac, as your user, to list its tools.
+Whether the runtime also starts the server that you registered on the Mac, as your user, to list its tools is not established.
 
 ### Read the span labels
 
@@ -551,7 +650,7 @@ A `stdio` client then has no driver, and the runtime refuses its tool calls.
 ### What tier 3 does and does not protect
 
 - **It contains the tool runner.** The runner works in a gVisor container with no network, inside the virtual machine.
-- **It does not contain the MCP server.** The runtime starts a `stdio` server on the Mac, as your user. Only the tool call goes to the sandbox.
+- **It does not contain the MCP server.** Only the tool call goes to the sandbox, and the container command answers it. Whether the runtime also starts the `stdio` server on the Mac is not established.
 - **It does not cover tier 1.** A remote, read-only client still runs at tier 1.
 - **It does not cover provider calls.** A model call never runs in the sandbox.
 - **It depends on the image.** The kit pulls the image you name and does not inspect it.
@@ -577,7 +676,8 @@ The runtime starts the program directly, with no shell, so a prompt cannot injec
 What this isolation does not do:
 
 - **It is not a sandbox.** The program runs as your user. Its restraint comes from its own flags, and the runtime trusts the program to honor them.
-- **It does not switch every provider's tools off.** Claude Code gets an empty tool list and Codex gets its tool features disabled. Antigravity gets `--sandbox` only.
+- **It does not switch every provider's tools off.** Claude Code gets an empty tool list and Codex gets its tool features disabled. Antigravity gets `--sandbox` only, and no flag switches its tools off. Whether `--sandbox` stops its own tools is not established.
+- **A custom provider has none of it.** The runtime passes only the arguments that you wrote, so an agent behind it acts under its own permission settings. See [Run an agent that acts with its own tools](providers.md#run-an-agent-that-acts-with-its-own-tools).
 - **It passes `HOME`.** The program needs its own sign-in, so it can reach your home directory.
 - **It removes five variables, not all secrets.** For Codex and Antigravity every other variable of your environment passes through.
 - **It puts some prompts on the command line.** Antigravity receives the prompt as an argument, which other programs of your user can see while the call runs.
@@ -640,7 +740,12 @@ Upstream, under `<home>/upstream/`:
 - `harness-runtime/src/harness_runtime/config/sandbox_defaults.py`: the span labels per tier
 - `harness-runtime/src/harness_runtime/bootstrap/factories/runtime_tool_dispatcher_factory.py`: the driver for each tier
 - `harness-as/src/harness_as/mcp_transport_floor.py` and `harness-as/src/harness_as/blast_radius_floor.py`: the tier rules
+- `harness-cp/src/harness_cp/gate_level_rule.py` and `harness-cp/src/harness_cp/hitl_placement.py`: the gate floors and the placements
+- `harness-runtime/src/harness_runtime/lifecycle/hitl_gate_composer.py`: when a gate applies and how the policy lowers a floor
+- `harness-runtime/src/harness_runtime/bootstrap/factories/r_cxa_2_producer_loop_factory.py` and `harness-runtime/src/harness_runtime/lifecycle/hitl_tool_loop.py`: the gate on a model's tool call
+- `harness-runtime/src/harness_runtime/bootstrap/factories/mcp_client_host_factory.py`: the labels of a client and the credential
 
 Evidence: `arhugula audit status`, `arhugula policy show` and `arhugula isolation show`, run on the development deployment for this page.
+The statements about gates, tool calls and labels marked *witnessed* come from runs on that deployment with the policy on and off, kept as transcripts.
 The statements about the virtual machine marked *witnessed* come from read-only probes of that deployment's machine and ports.
-The limit on mixed MCP clients was reproduced on that deployment, with transcripts kept.
+The run with a `stdio` and an HTTP client together was repeated on that deployment at the current pin, with transcripts kept.

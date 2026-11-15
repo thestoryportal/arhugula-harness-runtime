@@ -34,6 +34,7 @@ The runtime builds the whole input of that call from the sources in this table, 
 | Each activated skill | The skill's text, added to the system prompt after the prompt version | Two files in the project's `.agents/skills/` directory |
 | The memory packet | A short read-only summary of what the harness remembers, added after the skills | Nothing: the runtime writes it when memory is on ([Memory](memory.md)) |
 | The previous step's output | One extra user message that starts with `Upstream step output:` | Nothing: the runtime adds it when the feature `data-flow` is on |
+| The registered tools | On `ollama` and `anthropic`, the definition of every tool of every connected tool server, and the memory tools when they apply. The step's `tools` list does not limit them. | Nothing in the step: [Give agents tools](workflows.md#give-agents-tools) says how tools get there |
 
 A command-line provider receives all of this as one text.
 The text has one part per source, each part starts with its role, and a blank line separates the parts:
@@ -80,6 +81,8 @@ Your `CLAUDE.md` and `AGENTS.md` files still guide an agent CLI that you run you
 
 A step payload has three keys: `messages`, `tools` and `params`.
 The runtime hands `params` to the provider's own call, so its shape depends on the provider family that serves the step.
+The `tools` key holds tool definitions, not names.
+It does not limit what a model can call: write `tools = []` in a text step, and read [Know that a step's `tools` list limits nothing](workflows.md#know-that-a-steps-tools-list-limits-nothing).
 
 Compare the two smallest upstream examples.
 This is the step of `upstream/examples/minimal.toml`, written for the Anthropic API:
@@ -114,7 +117,7 @@ Use this table to choose the shape of `params`.
 | --- | --- | --- |
 | Hosted API | `anthropic`, `openai` | `{ max_tokens = <number> }`. The Anthropic API requires `max_tokens`. |
 | Ollama | `ollama` | `{ options = { num_predict = <number> } }`. The keys go to Ollama's chat call. |
-| Command-line | `claude_code`, `codex`, `antigravity` | Not used: the call sends text only. Keep `tools = []`, because the runtime refuses a command-line step that lists tools. |
+| Command-line | `claude_code`, `codex`, `antigravity`, and a custom provider | Not used: the call sends text only. Keep `tools = []`, because the runtime refuses a command-line step that lists tools, and the fallback chain then serves the step with the next provider. |
 
 Four rules decide which shape you need:
 

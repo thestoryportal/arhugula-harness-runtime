@@ -144,8 +144,8 @@ A manifest is one TOML file. It names the workflow, picks a topology, and lists 
 
 - **The workflow table:** `workflow_id` names the workflow. `workload_class` is one of four classes of work: `pipeline-automation`, `software-engineering`, `research` or `content-creation`.
 - **The topology:** `topology_pattern` says how the steps relate. Six topologies ship, and [workflows](workflows.md) describes each one.
-- **The steps:** each `[[steps]]` entry has a `step_id`, a `step_kind` and a payload. An `inference-step` calls a model. A `tool-step` calls a tool.
-- **The gates:** `hitl_placements` puts an approval gate in front of the tools it names.
+- **The steps:** each `[[steps]]` entry has a `step_id`, a `step_kind` and a payload. An `inference-step` calls a model. A `tool-step` calls one named tool, and no model decides. On `ollama` and `anthropic`, the model of an inference step can also call tools: see [Give agents tools](workflows.md#give-agents-tools).
+- **The gates:** `hitl_placements` puts an approval gate in front of the tool steps it names. It does not cover a tool call that a model decides on.
 
 A project can only run a workload class that it binds. Init binds all four by default.
 
@@ -279,8 +279,9 @@ Details: [operate](operate.md) and [security and isolation](security-and-isolati
 ## Gates stop a run until you answer
 
 A gate is a stop in front of a tool call. A person must decide before the call happens.
-A manifest places a gate, and the policy decides whether the gate asks you or approves on its own.
-`arhugula policy show` prints the policy.
+For a tool step, a manifest places the gate, and the policy decides whether the gate asks you or approves on its own.
+For a tool call that a model decides on, no placement applies: the persona, the server's declared labels and the policy decide.
+`arhugula policy show` prints the policy, and [Set what a gate approves without asking](security-and-isolation.md#set-what-a-gate-approves-without-asking) explains both cases.
 
 When a gate asks, it prints the step and its payload, then this prompt:
 
