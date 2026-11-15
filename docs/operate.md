@@ -39,6 +39,7 @@ arhugula run <manifest> [--project <project>] [--provider <name>] [--model <name
 | `--json` | Prints the full result as JSON, with each step's reply. |
 
 The config's first fallback chain serves every step; `--provider` and `--model` override it for one run; a manifest's own model binding does not select the provider.
+One manifest setting is the exception: a `model_binding` in `per_step_overrides` sends its step to the provider it names. See [How routing picks a provider](providers.md#how-routing-picks-a-provider).
 To change the chain itself, see [providers](providers.md).
 
 ### How a manifest name is found
@@ -69,10 +70,13 @@ ledger:    042bb28f065c0f886b1a7bb4c33f0ed805e7543174ae7cd6b2accb80cab2fe58
 ```
 
 - **`override:`** appears only with `--provider` or `--model`. It names where every step goes first. A provider that fails still falls back along the config's chain.
-- **`status:`** is `completed`, `failed` or `paused`.
-- **`ledger:`** is the head hash of the project's state ledger after the run.
+- **`status:`** is `completed`, `failed`, `paused`, `drained` or `partial`. `drained` means that the run limit ended the run. `partial` means that a fan-out run finished although at least one branch failed.
+- **`ledger:`** is the hash of the newest audit entry in the project's state ledger after the run. An audit entry is one whose action id starts with `audit:`. This hash is not the `head_hash` that `arhugula status` shows, which belongs to the newest entry of any kind.
 
 A subscription CLI provider (`claude_code`, `codex`, `gemini`, `antigravity`) is never priced. So a run on one writes no cost entry (*upstream limit*, by design).
+It writes no audit entry either, so its `ledger:` hash is the same as before the run.
+Its step entries are still written, and `arhugula status` shows them (*witnessed*).
+Upstream issue #1743 covers the missing cost and audit entries.
 
 ## Check what ran
 
@@ -140,6 +144,21 @@ ledger:    21b9f014c2e4e7d5b32c295e83f0660bde95e650eff0feef88ad4e565f2e253b
 
 The gate asks only when the run has a terminal. A run with no terminal rejects the gate with `noninteractive: no operator terminal` (*upstream limit*). An answer the gate does not recognise also rejects it.
 If you stay silent, the gate waits for its configured timeout, or for 900 seconds when none is set.
+
+The wait is part of the step, so the step deadline and the run limit apply to it too: 30 and 60 seconds unless set.
+So at default settings you must answer within 30 seconds, and the 900 seconds are not reached.
+A gate of the same example that was answered `approve` after 45 seconds ended the run with exit code 1 (*witnessed*):
+
+```text
+status:    failed
+workflow:  example-gated-tool
+ledger:    6911de13d839b9d5ae23f8a8a899110fb7176664e815062e4c2c93b24c91840f
+failure:   RT-FAIL-WORKFLOW
+detail:    workflow execution returned status='failed' with fail_class='step-failure: RT-FAIL-STEP-DISPATCH-TIMEOUT: step dispatch exceeded 30.0s bound'
+```
+
+Raise both before a run whose gate may wait longer: see `step_dispatch_timeout_seconds` and `drain_timeout_seconds` in [the capability matrix](configure.md#capability-matrix).
+`arhugula policy set <setting> off` prints a note with the same deadline.
 
 ## Put a gate on hold and answer it later
 
@@ -253,6 +272,7 @@ The runtime sets three rules:
 ## Run workflows through the daemon
 
 The daemon is one long-lived runtime process for a project. It loads the config once and serves runs until you stop it.
+So after any command that changes configuration, run `arhugula daemon stop` and then `arhugula daemon start`. Until then the daemon serves runs with the earlier config.
 
 ```sh
 arhugula daemon start [--project <project>]
@@ -305,6 +325,7 @@ More on agent CLIs is in [agents](agents.md).
 ## Read a run log
 
 Every `run` and `resume` writes a log file under `<home>/logs/` (*kit extension*). The log holds the runtime's command line, everything the run wrote to standard error, and a last line `exit: <code>`. The result lines on standard output are not in the log.
+A run log can quote prompts and tool output. So the kit creates each one with mode 0600: only you can read it.
 
 List the log files, newest first:
 
@@ -389,7 +410,9 @@ arhugula state backup
 ```
 
 The archive holds the state root and the answers file `config/init-answers.json`. It does not hold the keys under `<home>/keys` or the secrets under `<home>/secrets`, so back those up separately.
-The archive goes to `<home>/backups/state-<time>.tar.gz` and only you can read it. `--output <file>` writes it elsewhere.
+
+The archive goes to `<home>/backups/state-<time>.tar.gz`. `--output <file>` writes it elsewhere.
+Only you can read the archive, from its first byte: the kit creates it with mode 0600. The directory `<home>/backups` has mode 0700.
 
 ### Restore a backup
 
@@ -400,6 +423,10 @@ arhugula state restore <archive>
 
 Restore refuses while a daemon runs. It moves the current state root aside to `<home>/state.before-restore-<time>` and extracts the archive. Then the runtime verifies the restored root.
 If any step fails, the earlier state root is put back. Delete the copy that was moved aside when you are sure of the restore.
+
+The pause journals are in the state root, so a restore replaces them with the journals of the archive.
+A gate that you put on hold after the backup is then not in the restored state root.
+So answer the gates on hold before you restore: `arhugula gate list` shows them.
 
 ### Have the runtime verify the state root again
 

@@ -117,10 +117,11 @@ Use this table to choose the shape of `params`.
 | Ollama | `ollama` | `{ options = { num_predict = <number> } }`. The keys go to Ollama's chat call. |
 | Command-line | `claude_code`, `codex`, `gemini`, `antigravity` | Not used: the call sends text only. Keep `tools = []`, because the runtime refuses a command-line step that lists tools. |
 
-Three rules decide which shape you need:
+Four rules decide which shape you need:
 
-- **Routing rule:** the config's first fallback chain serves every step; `--provider` (and `--model`) override it for one run; a manifest's own model binding does not select the provider.
+- **Routing rule:** the config's first fallback chain serves every step; `--provider` (and `--model`) override it for one run; a manifest's own model binding does not select the provider. A more specific setting wins over the chain: a per-step `model_binding`, a workload override or a role binding. See [How routing picks a provider](providers.md#how-routing-picks-a-provider).
 - **Write for that provider:** run `arhugula routing show` to see the chain, then write `params` for the family at its head.
+- **Another family can serve the step:** the fallback provider, or a more specific binding, can be of another family. The runtime passes `params` unchanged to whichever provider serves the step. A hosted API and Ollama take its keys as arguments of their call, and a command-line call does not read them. What a provider does with another family's keys was not run.
 - **Keep one system prompt:** when a prompt version is active, leave the system prompt out of the payload. The runtime fails the step with `RT-FAIL-PROMPT-INJECTION-CONFLICT` when it finds two.
 
 To start a manifest, let the kit derive one for your default provider (*kit extension*):
@@ -209,7 +210,8 @@ The hook is a Python object that the runtime asks, before each model call, which
 *Upstream limit:* the runtime accepts the hook only as a Python object on its configuration, and a TOML file cannot carry one.
 *Kit extension:* `arhugula skill hook set` stores the hook's name, and `arhugula run` then starts the runtime with that hook attached.
 Everything else in the run, including gates and exit codes, stays the runtime's own.
-A run that you send to a daemon with `--daemon` does not get the hook, because the kit starts the daemon without it.
+The kit starts a daemon the same way, so a run that you send with `--daemon` gets the hook and the project's import path too.
+A daemon takes the hook when it starts: after you set or clear the hook, run `arhugula daemon stop` and then `arhugula daemon start`.
 
 To activate every loaded skill before each model call, use the hook the kit ships:
 
@@ -238,6 +240,16 @@ Save your class in `<project-path>/skills/`, for example as `my_hooks.py`, and n
 
 ```sh
 arhugula skill hook set my_hooks:OnlyHaiku
+```
+
+The command imports and builds the class before it stores the name.
+It looks in the `skills/` and `validators/` directories of the current project.
+It refuses a class it cannot import or build, with exit code 3, and stores nothing.
+This is the refusal when the module is not there:
+
+```text
+arhugula: the hook my_hooks:OnlyHaiku cannot be used (ModuleNotFoundError): No module named 'my_hooks'
+  fix: save the class in the project's skills/ directory; see docs/authoring.md
 ```
 
 One hook serves the whole deployment.

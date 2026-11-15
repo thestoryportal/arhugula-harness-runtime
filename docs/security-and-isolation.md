@@ -37,12 +37,13 @@ None of them protects against a person or a program that already runs as your ma
 | Mechanism | What it does | What it does not do |
 | --- | --- | --- |
 | Keychain for API keys | Keeps hosted API keys out of every file of the deployment. | It does not stop a program that runs as you from asking the keychain. |
-| Private files and directories | Stops other users of the Mac from reading keys, the Grafana password and state. | It does not encrypt anything. It does not cover the run logs or the configuration. |
+| Private files and directories | Stops other users of the Mac from reading keys, the Grafana password, state, backups and run logs. | It does not encrypt anything. It does not cover the configuration. |
 | Audit hash chain | Shows an entry that was changed or removed while the hashes after it stayed as they were. | It is not a signature. Whoever can write the ledger can recompute the hashes, or remove entries from the end. |
 | Audit signing | Makes a forged entry need the signing key. | It does not protect a ledger if the key file is copied, and every program that runs as you can read that file. It does not show entries removed from the end. |
 | Approval gates | Ask you before a tool call that the workflow puts a gate in front of. | They do not cover a tool call that no gate names. They do not ask for calls the policy approves without asking. |
 | Isolation tier 3 | Runs a tool call in a gVisor container with no network, inside the virtual machine. | It does not sandbox provider calls or tier 1 tool calls. It does not sandbox the MCP server process, which still starts on the Mac. |
 | Provider-call isolation | Removes API keys from the environment. For Claude Code and Codex it also switches the provider's tools off. | It does not hide your home directory from the provider's program. It passes no flag that switches Gemini's tools off. |
+| Routing and the fallback chain | Choose which provider serves a step. | They are not a data boundary. A step that fails on its provider goes to the next provider of the chain with the same prompt. `--provider` only puts a provider in front of the whole chain. To keep every step on one provider, make it the chain's only entry: `arhugula routing chain set <binding> --fallback none`. See [Change the routing](providers.md#change-the-routing). |
 
 ## Keep secrets out of files
 
@@ -66,6 +67,15 @@ These rules hold for keys:
 - **An environment variable is a fallback.** When the keychain has no entry, the runtime reads `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` from the environment. Unset them if you want the keychain to be the only source.
 - **Subscription providers use no key.** Claude Code, Codex, Gemini and Antigravity each keep their own sign-in. The deployment never reads it.
 - **An MCP credential lives in the keychain too.** `arhugula mcp add --auth-secret-name <entry>` names a keychain entry; the credential itself stays out of the configuration. The runtime sends the credential as a bearer token, and refuses the flag for a `stdio` client.
+
+No `arhugula` verb stores an MCP credential.
+Create the keychain entry in your own terminal; [Keep secrets out of TOML](configure.md#keep-secrets-out-of-toml) explains the command:
+
+```sh
+security add-generic-password -s harness -a <entry> -w
+```
+
+The service and the account are read in the runtime's code; this command was not run.
 
 ### Know where the Grafana password is
 
@@ -92,14 +102,17 @@ Tempo and the collector ask for no password; see [what the virtual machine can s
 | `<home>/state/pause-journal/` | 0700 | the journals of paused runs |
 | `<home>/backups/` | 0700 | backup archives |
 | a backup archive | 0600 | see the next section |
+| a run log in `<home>/logs/` | 0600 | what a run printed, which can quote prompts and tool output |
 
 Mode 0700 means only your user can enter the directory.
 Mode 0600 means only your user can read or write the file.
 The public keys and the key map in `<home>/keys/` are readable by design: they verify signatures and sign nothing.
 The files in `<home>/config/` are not private and hold no secret.
 
-The kit sets no mode on the home directory or on the run logs in `<home>/logs/`.
-On the development deployment other users of the Mac can list the home and read the run logs.
+The kit sets no mode on the home directory or on the directory `<home>/logs/`.
+On the development deployment other users of the Mac can list the home and the names of the run logs.
+They cannot read a run log.
+A log that an earlier kit wrote keeps the mode it had.
 
 These modes protect against other users of the Mac.
 Nothing here is encrypted, so a program that runs as you can read every one of these files.
@@ -117,7 +130,7 @@ Stop the daemon first so the archive is consistent.
 | | the virtual machine and the trace data in it |
 
 `init` creates `<home>/backups/` with mode 0700.
-`state backup` does not change the mode of a directory that already exists, so check it with `ls -ld <home>/backups` on a deployment that an earlier kit created.
+`state backup` sets that mode again on every run.
 With `--output <file>` the archive goes where you say, and the directory there is yours to protect.
 
 The archive has mode 0600 from its first byte, and a backup that fails leaves no partial archive behind.
@@ -126,11 +139,13 @@ It holds everything your workflows remembered, so store a copy as carefully as t
 
 `arhugula state restore <archive>` moves the current state root aside and keeps it; it deletes nothing.
 The earlier state root stays at `<home>/state.before-restore-<time>/`, with mode 0700, until you delete it.
-`arhugula memory export` also writes to `<home>/backups/`. Its archive gets mode 0600 only after it is written.
+`arhugula memory export` also writes to `<home>/backups/`, and sets the directory's mode to 0700 when it does.
+Its archive has mode 0600 from its first byte too.
 
 `arhugula uninstall --yes` keeps state, keys, secrets and backups.
 Only `--delete-state` removes them.
 Neither form removes a keychain entry or a `state.before-restore-<time>/` directory.
+Neither form removes the download caches that uv and Lima keep outside the home.
 Remove a key with `arhugula provider key delete <name>` before you uninstall.
 
 ## Sign the audit ledger
@@ -159,11 +174,12 @@ arhugula audit keygen
 ```
 
 Upstream ships no key generator (*upstream limit*), so the kit adds this verb (*kit extension*).
+If you chose the feature `s` at `init`, init already created both keys and you can skip this command.
 It writes two Ed25519 key pairs and a key map into `<home>/keys/`:
 
 - **The entry key** signs every audit entry.
 - **The record key** signs each ledger's cutover record. That record lists the entries that may go without a signature. For a ledger signed from its first entry the list is empty, so every entry must carry a valid signature.
-- **The key map** lists the public keys. `arhugula audit verify --signatures` reads it.
+- **The key map** lists the public keys. `arhugula audit verify` reads it.
 
 The runtime requires the record key to be different key material from the entry key.
 The reason: someone who copies the entry key can then forge entries, but cannot forge a record that excuses unsigned ones.
@@ -189,7 +205,11 @@ Whether a ledger verifies in full depends on when signing began:
 | already held entries when signing was switched on | the hash chain only (*upstream limit*) |
 
 An unsigned entry never verifies, and the runtime writes no cutover record for a ledger that began unsigned.
+Writing that record afterwards does not help.
+Upstream's `harness migrate-audit-sidecar --author` was tried on such a ledger, and verification then fails with `signature-invalid` on the unsigned entries (*witnessed*).
+
 To have every ledger signed from its first entry, switch signing on during `init`: choose the feature `s` at the features question.
+Init then creates both keys itself.
 A project you attach after `arhugula audit enable` is also signed from its first entry.
 
 `arhugula audit disable` stops signing new entries.
@@ -232,24 +252,32 @@ arhugula audit verify --project <project>
 arhugula audit verify --project <project> --signatures
 ```
 
-Without `--signatures` the command checks the hash chain.
-With `--signatures` it also checks every signature and the cutover record.
-Which one to use depends on the ledger:
+The command chooses the check from the ledger, with or without the flag:
 
-- **A ledger that began unsigned:** leave `--signatures` out. With it, the command refuses and tells you why.
-- **A ledger signed from its first entry:** pass `--signatures`. Without it, the inspector gets the cutover record and no key map, and answers `UNVERIFIED` with exit code 3.
+| The ledger | What the command checks |
+| --- | --- |
+| has a cutover record, and the key map exists | the hash chain, every signature and the cutover record |
+| any other ledger | the hash chain only |
+
+`--signatures` requires the full check.
+With it, the command refuses a ledger that cannot have the full check and tells you why.
+Pass it where a hash-chain check alone must not count as a pass, for example in a script.
+
+The last line of the output says which check ran.
+After the full check it says `the hash chain is intact and every entry's signature verified`.
+After the hash-chain check it says `the hash chain is intact (this ledger carries no cutover record, so signatures were not checked)`.
 
 The runtime's inspector does the work, and its exit code is the result:
 
 | Exit code | Meaning |
 | --- | --- |
-| 0 | The checks you asked for passed. |
+| 0 | The check that ran passed. |
 | 3 | `UNVERIFIED`: the inspector lacked an input, and its message names it. |
 | 4 | Verification ran and failed; the message names the entry. |
 
 A passing result proves less than it may seem to:
 
-- **The hash chain has no key.** A program that can write the ledger can change an entry and recompute every hash after it. The check without `--signatures` then passes.
+- **The hash chain has no key.** A program that can write the ledger can change an entry and recompute every hash after it. The hash-chain check then passes.
 - **Nothing records how long a ledger should be.** Entries removed from the end of the ledger and of its audit file leave a chain that passes with and without `--signatures`. The inspector prints `head_hash`; note it somewhere else if you need to detect this.
 - **Verification trusts the files in `<home>/keys/`.** A program that runs as you can read the private keys, sign new entries and replace the key map. Keep a copy of the public keys outside the Mac if you need to rule that out.
 - **The signature shows which key signed.** It does not show which person or program used the key.
@@ -284,6 +312,9 @@ A tool call that no placement names runs without asking, whatever the policy say
 The policy decides which calls a gate approves on its own, without asking.
 The policy applies to workflows that run as the `solo-developer` persona.
 
+The gate floor and this policy read that persona from the workflow file's `persona_tier`.
+They do not read the deployment's `persona_tier` setting, which decides trace sampling, trace redaction and prompt-version approval, and the runtime does not compare the two.
+
 <!-- witness -->
 ```sh
 arhugula policy show
@@ -312,13 +343,14 @@ arhugula policy set solo-floor-auto off
 
 With `solo-floor-auto` off, a gated tool call asks at the terminal (*witnessed*).
 The answer `approve` let the run complete.
+Answer within the step deadline, 30 seconds unless set: [Enable, disable and tune a provider](providers.md#enable-disable-and-tune-a-provider) shows how to raise it.
 
 Four limits apply:
 
 - **No setting approves external changes.** The policy has no switch for tool calls that change something outside the Mac. It cannot make a gate approve them.
 - **A run without a terminal rejects a gate.** The runtime answers `noninteractive: no operator terminal` (*upstream limit*).
-- **The policy trusts the declared blast radius.** A tool counts as read-only because its MCP client was added as `READ_ONLY`. The runtime does not inspect what the tool does.
-- **The workflow file decides where gates are.** Whoever writes the workflow chooses its gates and its persona, so read a workflow you did not write before you run it.
+- **The policy does not see what a tool does.** The runtime does not inspect a tool. It gives every tool of a client the blast radius that you declared with `--blast-radius`, and a gate follows that declaration: see [Declare how far you trust an MCP server](#declare-how-far-you-trust-an-mcp-server). To make a gate ask before a tool that is declared `READ_ONLY`, switch `solo-floor-auto` off.
+- **The workflow file decides where gates are.** Whoever writes the workflow chooses its gates and its `persona_tier`, so read a workflow you did not write before you run it.
 
 ## Declare how far you trust an MCP server
 
@@ -338,10 +370,15 @@ arhugula mcp add --help
 The blast radius is the most the server's tools can change.
 Both values are your declaration: the kit passes them to the runtime unchanged.
 
+The kit writes the `--blast-radius` value to two settings of the client, `blast_radius` and `default_blast_radius`.
+The runtime gives every tool of the client the value of `default_blast_radius`.
+Its gates and its tier computation follow that value.
+So with the default policy a gate approves a tool of a `READ_ONLY` client without asking.
+
 ### How the two values choose an isolation tier
 
 The runtime computes the lowest isolation tier a client's tool calls may run at.
-It starts from the blast radius:
+It starts from the blast radius that you declared:
 
 | Blast radius | Lowest tier |
 | --- | --- |
@@ -360,17 +397,32 @@ Then the transport and the trust level can raise it:
 | a remote client at `L2_SANDBOX_ALL` | tier 4 |
 
 The runtime never runs a call below the tier it computed.
-A client that resolves above tier 1 and has no sandbox driver is refused with `RT-FAIL-SANDBOX-DRIVER-UNAVAILABLE`.
-This deployment provides tier 1 and tier 3 only, so declare a client honestly and expect a refusal for tiers 2 and 4.
+This deployment provides tier 1 for every client, and tier 3 for `stdio` clients only.
+So a remote client that resolves above tier 1 has no sandbox driver.
+While such a client is configured, the runtime refuses every run at its start, with exit code 4.
+A remote client at `L1_SIGNED_PINNED` or `L3_ALLOW_WITH_AUDIT` that you declare `READ_ONLY` resolves to tier 1 and runs.
 
-One exception: `arhugula isolation attach` does not check a client's tier.
-A client that resolves to tier 2 and has an attached driver runs in an ordinary container in the virtual machine, without gVisor.
-The kit's message and `arhugula isolation show` still say tier 3 for it.
-Attach a driver only to a client that resolves to tier 3.
+A URL client added with `--blast-radius LOCAL_MUTATION` resolved to tier 2, and the next run ended with this message (*witnessed*):
 
-`arhugula mcp add` warns you about the refusal.
-With a blast radius other than `READ_ONLY`, it prints a note after it adds the client.
-The note says that the runtime runs the client above tier 1, and that this deployment provides tier 3 only, through `arhugula isolation attach`.
+```text
+RT-FAIL-BOOTSTRAP: bootstrap failed at stage LOOP_INIT (6): SandboxDriverUnavailableError: resolved sandbox tier 'tier-2-container' requires an execution driver but MCPClientConfig.sandbox_driver is not configured — configure a driver or set the per-server sandbox tier to TIER_1_PROCESS (runtime spec v1.43 §14.9.9 FR-2(i))
+```
+
+To run again, remove the client with `arhugula mcp remove <name>`.
+
+`arhugula isolation attach` gives a driver to a `stdio` client only.
+It refuses any other client with this message:
+
+```text
+<client> is not a stdio client. The runtime runs only stdio clients' tools at tier 3; for other clients it picks the tier itself, and this deployment provides no other sandbox tier
+```
+
+`arhugula mcp add` prints a note about the tier rule.
+With a blast radius other than `READ_ONLY`, it prints this after it adds the client, here for a client named `notes`:
+
+```text
+note: the runtime runs a client that can change things at a sandbox tier above 1. This deployment provides tier 3 only, and only for stdio clients. While a client needs a tier it does not have, the runtime refuses every run at its start (SandboxDriverUnavailableError). To undo: arhugula mcp remove notes
+```
 
 Not examined for this page: whether the runtime checks a signature or a version pin for `L1_SIGNED_PINNED`.
 
@@ -444,6 +496,10 @@ The command does four things:
 The Docker engine is the one inside the virtual machine.
 Docker Desktop is not required and is never used.
 
+Keep one kind of MCP client configured at a time (*upstream limit*).
+`sandbox-echo` is a `stdio` client. With it and an HTTP client from `arhugula mcp add` both configured, every run serves its tool calls and then ends with an error and exit code 1 (*witnessed*).
+The known gaps describe [the limit on mixed MCP clients](reference/known-gaps.md#audit-and-isolation).
+
 ### Give your own MCP client a sandbox
 
 The runtime runs every `stdio` MCP client at tier 3 or higher.
@@ -453,7 +509,7 @@ A `stdio` client therefore needs a tier 3 driver before its tools can run.
 arhugula isolation attach <client> --image <image> --command '["python","/runner.py"]'
 ```
 
-`<client>` is a name from `arhugula mcp list`.
+`<client>` is the name of a `stdio` client from `arhugula mcp list`.
 `--image` is a container image that holds your tool runner.
 `--command` is the runner inside the image, as a JSON array.
 The runner reads one MCP request as JSON on standard input and writes one MCP result as JSON on standard output.
@@ -568,6 +624,8 @@ Kit modules, under `<home>/kit/`:
 - `lib/arhugula_kit/verbs_authoring.py`: the audit and isolation verbs
 - `lib/arhugula_kit/render.py`: the cutover-record rules
 - `lib/arhugula_kit/verbs_state.py`: backup and restore
+- `lib/arhugula_kit/common.py` and `lib/arhugula_kit/layout.py`: the modes of run logs, archives and the backups directory
+- `lib/arhugula_kit/audit_keys.py` and `lib/arhugula_kit/initflow.py`: the keys that init creates
 - `lib/arhugula_kit/isolation.py`: the tier 3 driver and the wrapper script
 - `lib/arhugula_kit/observability.py`: the Grafana password
 - `lib/arhugula_kit/vm.py` and `observability/lima/arhugula.yaml.tmpl`: the virtual machine and its mounts
@@ -586,3 +644,4 @@ Upstream, under `<home>/upstream/`:
 
 Evidence: `arhugula audit status`, `arhugula policy show` and `arhugula isolation show`, run on the development deployment for this page.
 The statements about the virtual machine marked *witnessed* come from read-only probes of that deployment's machine and ports.
+The limit on mixed MCP clients was reproduced on that deployment, with transcripts kept.

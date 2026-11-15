@@ -3,7 +3,7 @@
 This page is a reference for an operator or a workflow author who changes how the harness runtime behaves.
 After reading it you can read a generated config, find the command or the named feature that sets any runtime key, and change a key that no command names.
 
-It applies to the upstream commit named in the kit's `PIN` file.
+It applies to the upstream commit named in the kit's `PIN` file; `arhugula --version` prints that commit.
 
 Other pages cover the neighbouring tasks:
 
@@ -46,6 +46,10 @@ Every `arhugula` command that changes configuration works in the same four steps
 
 When the loader refuses one config, the command ends with exit code 4 and the loader's reason.
 Nothing was changed: the answers file and every config stay as they were.
+
+A running daemon keeps the config it loaded when it started.
+To have it use a change, restart the daemon of each project whose runs you send with `--daemon`.
+Run `arhugula daemon stop`, then `arhugula daemon start`: see [Run workflows through the daemon](operate.md#run-workflows-through-the-daemon).
 
 ```mermaid
 flowchart TD
@@ -200,6 +204,7 @@ This table explains each part of the file, from top to bottom.
 | `[[runtime.external_cli_providers]]` | One entry for each command-line provider: its program, time limit and sign-in check | The base and `arhugula provider set` |
 
 The routing rule: the config's first fallback chain serves every step; `--provider` (and `--model`) override it for one run; a manifest's own model binding does not select the provider.
+One manifest setting is the exception: a `model_binding` in `per_step_overrides` sends its step to the provider it names. See [How routing picks a provider](providers.md#how-routing-picks-a-provider).
 
 A config can hold more parts than this table lists, for example prompt versions, validator bindings and clients for Model Context Protocol (MCP) tool servers.
 The [capability matrix](#capability-matrix) names the command behind each.
@@ -237,7 +242,7 @@ Three phrases recur in the last column:
 | `tenant_id` | The name that separates one project's records from another's: the project name. | `arhugula project add` |
 | `path_bindings` | Where skills, prompts, the routing manifest and the state ledger live for each workload class. | `arhugula project add`; worktree options with feature `worktree-isolation` |
 | `state_placement` | The state root, and directories that must never hold state. | The home decides the state root (`arhugula relocate`); `init` question 13 sets the other directories (`arhugula init --reconfigure`) |
-| `persona_tier` | Whether the deployment counts as one developer or a team, which decides approval floors and trace redaction. | Feature `persona-team` |
+| `persona_tier` | Whether the deployment counts as one developer or a team. It decides trace sampling, trace redaction and whether a prompt version needs approval. An approval gate reads the `persona_tier` of the workflow's manifest instead: see [workflows](workflows.md#read-a-manifest-field-by-field). | Feature `persona-team` |
 | `default_topology` | The topology used when a workflow names none. | Fixed by the kit as `single-threaded-linear`; `config set` |
 | `pidfile_path` | The file that records the running runtime's process id. | Fixed by the kit under `<home>/run` |
 
@@ -246,8 +251,8 @@ Three phrases recur in the last column:
 | Key | What it means | Set it with |
 | --- | --- | --- |
 | `enabled_provider_names` | The providers the runtime may use. | `arhugula provider enable`, `arhugula provider disable` |
-| `external_cli_providers` | One entry for each command-line provider: program, arguments, time limit, sign-in check, answer format. | `arhugula provider enable --command`, `arhugula provider set`, `arhugula provider unset` |
-| `ollama_host` | The address of the Ollama server. | `init` question 6, which `arhugula init --reconfigure` asks only while Ollama does not answer at its address |
+| `external_cli_providers` | One entry for each command-line provider: its program, time limit and sign-in check. | `arhugula provider enable --command`, `arhugula provider set`, `arhugula provider unset` |
+| `ollama_host` | The address of the Ollama server. | `arhugula provider ollama-host <url>`; `init` question 6, which `arhugula init --reconfigure` asks only while Ollama does not answer at its address |
 | `ollama_optional`, `anthropic_optional`, `openai_optional` | Whether the runtime may start when that provider does not answer. | Fixed by the kit: false for the default and the fallback provider (`arhugula routing chain set`) |
 | `provider_secrets` | The keyring service and the names of the secrets the runtime may read. It never holds a secret value. | `config set` |
 
@@ -267,8 +272,8 @@ Three phrases recur in the last column:
 | `inter_step_data_flow` | Each step receives the most recently recorded step output. | Feature `data-flow` |
 | `engine_output_replay` | A resumed run gets back the outputs of steps that already ran. | Feature `engine-replay` |
 | `effect_fencing` | A tool step that is not safe to repeat runs at most once across retries and resumes. | Feature `effect-fencing` |
-| `step_dispatch_timeout_seconds` | How long one step may take; 30 seconds unless set. | Feature `deadlines`; `config set` |
-| `drain_timeout_seconds` | How long the runtime waits for a whole workflow run before it shuts the run down; 60 seconds unless set. | Feature `deadlines`; `config set` |
+| `step_dispatch_timeout_seconds` | How long one whole step may take, with a wait at an approval gate included; 30 seconds unless set. A provider's own `timeout_seconds` bounds one call inside the step: see [providers](providers.md#enable-disable-and-tune-a-provider). | Feature `deadlines`; `config set` |
+| `drain_timeout_seconds` | How long a whole workflow run may take, all steps together; 60 seconds unless set. After that the runtime stops waiting and ends the run with status `drained` and `RT-FAIL-DRAIN-TIMEOUT`. It does not cancel the step in flight. | Feature `deadlines`; `config set` |
 | `sub_agent_dispatch_max_workers` | How many sub-agent calls may run at once; 256 unless set. | Feature `concurrency`; `config set` |
 
 ### Gates, tools and validators
@@ -282,6 +287,10 @@ Three phrases recur in the last column:
 | `validator_framework_config` | The validators bound to step ids. | `arhugula validator bind`, `arhugula validator unbind` |
 | `pause_resume_protocol_config` | Whether a paused run is written to a journal so it can continue later. | `arhugula pause enable`, `arhugula pause disable` (feature `durable-pause`) |
 | `webhook_delivery_composer_config` | The address that receives a notification when a run pauses. | `arhugula webhook set`, `arhugula webhook clear` |
+
+Add a `stdio` tool server with `arhugula mcp add <name> --transport stdio` and the server's command in `--url`.
+Its tools run only at isolation tier 3, which needs the virtual machine: see [Give your own MCP client a sandbox](security-and-isolation.md#give-your-own-mcp-client-a-sandbox).
+A `stdio` client and an HTTP client do not work together: see [the troubleshooting entry](troubleshooting.md#cancellederror-cancelled-via-cancel-scope-stdio-and-http-mcp-clients-together).
 
 ### Prompts and skills
 
@@ -318,7 +327,7 @@ Three phrases recur in the last column:
 
 | Key | What it means | Set it with |
 | --- | --- | --- |
-| `audit_signing` | Whether audit entries are signed, and with which key files. | `arhugula audit keygen`, then `arhugula audit enable` (feature `audit-signing`) |
+| `audit_signing` | Whether audit entries are signed, and with which key files. | `arhugula audit keygen`, then `arhugula audit enable` (feature `audit-signing`); `init` generates the keys itself when you choose the feature at question 9 |
 | `audit_cutover_record_key_id`, `audit_cutover_record_path`, `audit_ledger_binding_id` | The record that marks a ledger as signed from its first entry. | Fixed by the kit for each ledger that was empty when signing went on |
 | `audit_signing_fail_closed` | A step fails when its audit entry cannot be signed. | Feature `audit-fail-closed` |
 | `protected_result_store_key_env_var` | The name of the environment variable that holds the key of the encrypted result store. | `config set` |
@@ -678,7 +687,7 @@ root_path = "{{TARGET_STATE}}/memory"
 
 ### `persona-team`: Team persona
 
-Classifies the deployment as `team-binding` instead of `solo-developer`. The persona drives the trace sampling base rate, redaction, and which approval floors exist.
+Classifies the deployment as `team-binding` instead of `solo-developer`. The persona drives the trace sampling base rate, redaction, and whether a prompt version needs approval.
 
 Needs: nothing
 
@@ -797,6 +806,7 @@ With a setting off, the gate asks you in the terminal. A run without a terminal 
 ```
 
 Change a setting with `arhugula policy set <setting> <on|off>`, for example `arhugula policy set solo-floor-auto off`.
+Answer a gate that asks within the step deadline, 30 seconds unless set: see `step_dispatch_timeout_seconds` in [the capability matrix](#capability-matrix).
 [Run and write workflows](workflows.md) shows a gate that asks.
 
 ## Offline embedding routing
@@ -889,13 +899,23 @@ Each kind of secret has its own place.
 | Secret | Where it goes | How |
 | --- | --- | --- |
 | A provider API key | The macOS keychain | `arhugula provider key set <name>` asks for the key with hidden input. |
-| The credential of an MCP server | The macOS keychain; the config holds only the entry's name | `arhugula mcp add --auth-secret-name <entry>` |
-| The audit signing keys | `<home>/keys/`, readable by you only | `arhugula audit keygen` |
+| The credential of an MCP server | The macOS keychain; the config holds only the entry's name | `arhugula mcp add --auth-secret-name <entry>` names the entry. No `arhugula` verb stores the credential: create the entry with the command below this table. |
+| The audit signing keys | `<home>/keys/`, readable by you only | `arhugula audit keygen`, or `init` when you choose audit signing at question 9 |
 | The Grafana password | `<home>/secrets/grafana-admin-password` | The kit generates it once. |
 | The key of the encrypted result store | The environment variable `HARNESS_PROTECTED_RESULT_STORE_KEY` | Set it in the shell that runs the workflow. The feature `audit-fail-closed` needs it. |
 
+The runtime reads the credential of an MCP server from the keychain service `harness`, under the account `<entry>`.
+Create that entry in your own terminal. macOS asks for the credential with hidden input:
+
+```sh
+security add-generic-password -s harness -a <entry> -w
+```
+
+The service and the account are read in the runtime's code; this command was not run.
+
 The directories `<home>/keys` and `<home>/secrets` are never in git and never in a backup.
 A subscription command-line provider needs no key at all: it uses its own sign-in.
+For a hosted API provider with no keychain entry, the runtime also reads `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` from the environment of the run.
 [Security and isolation](security-and-isolation.md) describes the keys and their use.
 
 ## What `sampling_mode` does at this pin

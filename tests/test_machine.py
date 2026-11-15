@@ -50,10 +50,10 @@ class VmChoice(unittest.TestCase):
 
 class LimaHelpers(unittest.TestCase):
     def test_a_short_home_leaves_room_for_the_sockets(self):
-        self.assertGreater(lima.socket_path_budget(Path("/Users/someone/arhugula/lima"), "arhugula"), 0)
+        self.assertGreater(lima.socket_path_budget(Path("/homes/someone/arhugula/lima"), "arhugula"), 0)
 
     def test_a_deep_home_does_not(self):
-        deep = Path("/Users/someone") / ("very-long-directory-name/" * 4) / "lima"
+        deep = Path("/homes/someone") / ("very-long-directory-name/" * 4) / "lima"
         self.assertLess(lima.socket_path_budget(deep, "arhugula"), 0)
 
     def test_the_host_architecture_uses_limas_spelling(self):

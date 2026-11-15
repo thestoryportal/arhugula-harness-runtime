@@ -166,7 +166,7 @@ ollama (fallback): ready
 codex (enabled): ready
     codex-cli 0.169.0; Logged in using ChatGPT
     command: /opt/homebrew/bin/codex
-    note: Upstream marks the Codex profile HELD: the CLI's filesystem read exposure is an untested boundary. Sign in with `codex login` to use your ChatGPT subscription; an API key makes every call a paid call. Codex is never the default primary.
+    note: Upstream marks the Codex profile HELD: the CLI's filesystem read exposure is an untested boundary. Sign in with `codex login` to use your ChatGPT subscription; an API key makes every call a paid call. Init does not propose Codex as the default provider when you selected another one.
 gemini (enabled): unverified
     0.66.0; this CLI offers no sign-in check, so the first run is the check
     command: /opt/homebrew/bin/gemini
@@ -249,16 +249,21 @@ ollama pull llama3.2:3b
 | --- | --- |
 | See the models you have pulled | `ollama list` |
 | Change the model that the `ollama` provider runs | `arhugula routing model set ollama <model>` |
+| Set the address of the Ollama server | `arhugula provider ollama-host <url>` |
 | Check that the server answers and the model is pulled | `arhugula provider check` |
 
 When the configured model is not pulled, the check reports `model-missing` and prints the fix `ollama pull <model>`.
 When the server does not answer, the check reports `unreachable` and prints the fix `ollama serve`.
 
+`arhugula provider ollama-host` changes the address only when a server answers there.
+When none answers, it stops with exit code 3 and the message `no Ollama server answers at <url>`, and nothing changes.
+
 ## Use a hosted API with a key in the keychain
 
 Two providers are hosted APIs that bill each call: `anthropic` and `openai`.
-Each needs an API key, and the key lives only in the macOS keychain.
+Each needs an API key, and the kit stores the key only in the macOS keychain.
 No key is ever written to a config file of the deployment.
+When the keychain has no entry, the runtime also reads `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` from the environment of the run: [known gaps](reference/known-gaps.md) lists this.
 
 Store the key first.
 You type it at a hidden prompt, so it is never an argument and never in your shell history.
@@ -298,22 +303,19 @@ An enabled provider is available to routing and to `--provider`.
 You cannot disable the default or the fallback provider: change the chain first, as [Change the routing](#change-the-routing) shows.
 
 `arhugula provider set` works on the four command-line providers, once enabled.
-It takes six keys, and three of them change nothing for these providers:
+It takes three keys:
 
 | Key | Meaning | Value | Takes effect on |
 | --- | --- | --- | --- |
 | `timeout_seconds` | how long one call, or one sign-in check, may take | a number of seconds; the kit sets 120 | all four |
 | `auth_check` | whether the runtime checks sign-in when a run starts | `true` or `false` | all four; `gemini` also needs `auth_args` |
 | `auth_args` | the arguments of the sign-in check | a JSON list of strings | `gemini` only, with `auth_check` set to `true` |
-| `args` | the arguments of a generic command's call | a JSON list of strings | none of the four |
-| `response_format` | how a generic command answers | `text`, `json` or `jsonl` | none of the four |
-| `prompt_transport` | how a generic command gets the prompt | `stdin` or `arg` | none of the four |
 
 The runtime builds the command line of each of the four providers itself, as [How the runtime calls a command-line provider](#how-the-runtime-calls-a-command-line-provider) shows.
-It reads `args`, `response_format` and `prompt_transport` only for its generic-command kind of provider, which the kit does not generate (*upstream limit*).
-The runtime's loader still accepts the three keys, so the verb succeeds and the calls stay the same.
+So the verb accepts no other key.
 
 `arhugula provider unset` removes your value, and the kit's own value applies again.
+It prints, for example, `claude_code: timeout_seconds is back to the value the kit generates`.
 The kit sets `timeout_seconds` to 120, and it sets `auth_check` to `true` for Claude Code, Codex and Antigravity and to `false` for Gemini.
 
 For example, give Claude Code five minutes for each call:
@@ -322,12 +324,25 @@ For example, give Claude Code five minutes for each call:
 arhugula provider set claude_code timeout_seconds 300
 ```
 
+Two more limits bound the same call, and each applies on its own.
+The step deadline `step_dispatch_timeout_seconds` bounds one whole step: 30 seconds unless set.
+The run limit `drain_timeout_seconds` bounds the whole run: 60 seconds unless set.
+So a call gets its five minutes only when both are longer, for example:
+
+```sh
+arhugula config set step_dispatch_timeout_seconds 330
+arhugula config set drain_timeout_seconds 360
+```
+
+[The capability matrix](configure.md#capability-matrix) describes both keys.
+
 Every one of these verbs regenerates the configs.
 The runtime's own loader must accept the result, or the verb stops with exit code 4 and changes nothing.
 
 ## How routing picks a provider
 
 The config's first fallback chain serves every step; `--provider` (and `--model`) override it for one run; a manifest's own model binding does not select the provider.
+One manifest setting is the exception: a `model_binding` in `per_step_overrides` sends its step to the provider it names. See [Override one step in the manifest](#override-one-step-in-the-manifest).
 
 A *fallback chain* is a default provider and model, followed by the fallbacks that the runtime tries when the default fails.
 See the chain and everything bound over it:
@@ -358,6 +373,7 @@ The rule has these consequences:
 - **`--provider` brings its own model.** The kit pairs `--provider` with the model that your deployment configured for that provider, and `--model` overrides it.
 
 An override that fails still falls back along the chain.
+`--provider` puts its provider in front of the whole chain, so a failed override falls back to the chain's default and then to its fallback.
 So a `completed` status does not prove that the provider you named served the run: read the `override:` line and the run's log.
 
 When more than one setting applies to a step, the runtime takes the most specific one.
@@ -435,7 +451,12 @@ The [workflows page](workflows.md) explains every field of a manifest.
 
 The four command-line providers use your subscription sign-in, and the runtime never prices them.
 A run on `claude_code`, `codex`, `gemini` or `antigravity` writes no cost entry.
-The ledger head hash that such a run reports is the same as before the run (*upstream limit*, by design).
+Leaving these calls unpriced is by design (*upstream limit*).
+
+Such a run still writes its step entries to the project's state ledger, and it writes no audit entry (*witnessed*).
+The `ledger:` line of a run prints the hash of the newest audit entry, so that hash is the same as before the run.
+`arhugula status` shows the head hash of the whole ledger, and that hash changes.
+Upstream issue #1743 covers the missing cost and audit entries.
 
 | Provider | What a call costs you |
 | --- | --- |

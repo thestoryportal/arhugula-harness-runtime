@@ -50,6 +50,11 @@ The runtime picks one access mode for each model call, in this priority order:
 3. **Provider-native memory.** The provider's own remote memory API. The runtime uses it only when you turn on the feature `memory-native`.
 4. **No memory access.** This applies when policy or capability denies every other mode.
 
+The runtime selects memory tools for `openai` and `ollama` only.
+A command-line provider (`claude_code`, `codex`, `gemini`, `antigravity`) sends text only, so its calls get the prompt packet.
+Calls to `anthropic` get the prompt packet too.
+This is read in the runtime's code, in `harness-cp/src/harness_cp/memory_access_mode.py`. A model's call of a memory tool was not witnessed for each provider.
+
 `init` question 10 asks which modes you want.
 It appears only when memory is enabled.
 
@@ -194,6 +199,10 @@ For each captured turn it prints the record and then asks, in this order:
 If you deny, the review asks for a reason.
 It ends with a line such as `review done: 1 proposed, 1 approved.`
 
+The review does not skip a turn that you already proposed from, so it shows that turn again the next time you start it.
+It also stops at the first proposal the operator tool refuses, for example a `fact` while the feature `memory-procedural` is on.
+[Known gaps](reference/known-gaps.md) lists both.
+
 The answer to step 5 is the record's injection policy.
 
 | Injection policy | Meaning |
@@ -291,7 +300,7 @@ The ten runtime verbs accept `--run-id <run-id>`, the run that owns a record.
 | --- | --- | --- |
 | `arhugula memory status` | Shows the memory root, the access modes, record counts and a ledger summary | No |
 | `arhugula memory review [--limit N]` | Walks through captured turns so you can propose, approve or deny. The default limit is 10 turns | Yes, through your answers |
-| `arhugula memory export [--output <file>]` | Writes the memory root to an archive with mode 0600. The default is `<home>/backups/memory-<project>-<time>.tar.gz` | No |
+| `arhugula memory export [--output <file>]` | Writes the memory root to an archive that only you can read (mode 0600) from its first byte. It never overwrites an archive. The default is `<home>/backups/memory-<project>-<time>.tar.gz` | No |
 | `arhugula memory operations` | Prints the memory-operation ledger | No |
 | `arhugula memory inspect <memory-id>` | Prints one record, including a redacted one | No |
 | `arhugula memory propose <source-id> --kind <kind> --statement <text> [--confidence low\|medium\|high]` | Proposes a memory from captured evidence. The default confidence is `medium` | Yes |

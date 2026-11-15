@@ -29,12 +29,13 @@ That is the multi-agent execution model:
 
 - **One process runs everything.** `arhugula run` starts the runtime once. The runtime's workflow driver runs every step, in the order the topology sets.
 - **Branches run at the same time.** Parallel branches, an orchestrator's workers and a hierarchy's children run concurrently inside that one process.
-- **Each agent step is one isolated provider call.** The call is short-lived. A command-line provider gets no session, no tools of its own and a scrubbed environment. The [providers page](providers.md#how-the-runtime-calls-a-command-line-provider) shows the exact command lines.
+- **Each agent step is one isolated provider call.** The call is short-lived. A command-line provider gets no session and a scrubbed environment. Claude Code and Codex also get no tools of their own; Gemini and Antigravity keep theirs and start in the project's repository: see [What each call can see](providers.md#what-each-call-can-see). The [providers page](providers.md#how-the-runtime-calls-a-command-line-provider) shows the exact command lines.
 - **No terminal multiplexer is involved.** The harness opens no panes and no windows. You watch one command in one terminal.
 - **A reviewer is a role in a topology.** The evaluator of an evaluator-optimizer workflow reviews the generator. The synthesis step of an orchestrator-workers workflow combines the workers. To review with another model, route that step: see [Review with a second model](providers.md#review-with-a-second-model).
 
-Agents change nothing in the world by themselves.
-A step acts only through the harness: a tool step calls a tool server, and an approval gate can stand in front of that call.
+Agents change nothing in the world by themselves, with one exception.
+A step that Gemini or Antigravity serves, as the default or as the fallback, runs that tool with its own tools on, and no gate covers them (*upstream limit*).
+Every other step acts only through the harness: a tool step calls a tool server, and an approval gate can stand in front of that call.
 
 ```mermaid
 flowchart TD
@@ -56,7 +57,9 @@ The diagram shows one run.
 The command starts one process, and its workflow driver starts two agent steps at the same time.
 Each agent step makes its own isolated provider call, and the driver joins the two results.
 A tool step passes an approval gate before it reaches its tool server.
-Every result ends in the project's state ledger.
+Every step's result ends in the project's state ledger, whichever provider served it.
+
+A run on a subscription provider writes no cost entry and no audit entry: see [Know what a run costs](providers.md#know-what-a-run-costs).
 
 ## Read a manifest field by field
 
@@ -104,7 +107,7 @@ It is the only version the loader accepts.
 | --- | --- | --- |
 | `workflow_id` | The workflow's name. A run reports it, and a paused run is resumed by it. | any text |
 | `workload_class` | The kind of work. The project's config must bind this class. | `pipeline-automation`, `software-engineering`, `research`, `content-creation` |
-| `persona_tier` | Who operates the workflow. It sets the floor for approval gates. | `solo-developer`, `team-binding`, `multi-tenant-compliance` |
+| `persona_tier` | Who operates the workflow. It sets the floor for approval gates, and the [auto-approve policy](security-and-isolation.md#set-what-a-gate-approves-without-asking) applies only at `solo-developer`. It is separate from the deployment's `persona_tier` setting, which decides trace sampling, trace redaction and prompt-version approval; the runtime does not compare the two. | `solo-developer`, `team-binding`, `multi-tenant-compliance` |
 | `engine_class` | How the run is executed. Every upstream example uses `pure-pattern-no-engine`, which runs the steps inline. | `pure-pattern-no-engine`, `event-sourced-replay`, `save-point-checkpoint`, `reconciler-loop`, `WAL-segment` |
 | `topology_pattern` | How the steps relate. | the six in [Choose one of the six topologies](#choose-one-of-the-six-topologies) |
 | `layer_budgets` | Time budgets for the routing layers. Every upstream example leaves the list empty. | a list |
@@ -115,7 +118,8 @@ It is the only version the loader accepts.
 
 The routing rule decides which provider serves a step.
 The config's first fallback chain serves every step; `--provider` (and `--model`) override it for one run; a manifest's own model binding does not select the provider.
-The [providers page](providers.md#how-routing-picks-a-provider) explains the rule.
+A more specific setting wins over the chain: a per-step `model_binding`, described below, a workload override or a role binding.
+The [providers page](providers.md#how-routing-picks-a-provider) explains the rule and that order.
 
 The loader accepts five more optional fields in this table: `entry_version`, `default_gate_level`, `fanout_timeout_disposition`, `concurrent_cache_warmup` and `sub_agent_briefs`.
 No upstream example sets them.
@@ -364,7 +368,7 @@ A placement has up to four fields.
 | `position` | one of the three positions; required |
 | `tool_filter` | for `pre-action`: the exact tool names that the gate covers; patterns are refused |
 | `cascade_policy` | replaces the workload class's default cascade policy: `pause`, `proceed` or `cascade-cancel` |
-| `timeout` | how long the gate waits for an answer, in milliseconds; without it, the gate waits 900 seconds |
+| `timeout` | how long the gate waits for an answer, in milliseconds; without it, the gate waits 900 seconds. The step deadline and the run limit, 30 and 60 seconds unless set, end the run sooner: see [the capability matrix](configure.md#capability-matrix) |
 
 A gate does not always ask.
 The deployment's policy lets some calls pass without asking; see it with `arhugula policy show`:
@@ -394,7 +398,7 @@ Do these steps in order.
    <home>/env/bin/python <home>/kit/examples/mcp/notes_server.py 18765
    ```
 
-2. **Connect the server.** Give the client any name; this example uses `notes`.
+2. **Connect the server.** Give the client any name; this example uses `notes` and leaves `--blast-radius` at its default, `READ_ONLY`, although `notes.write` appends to a file. It does so because this deployment refuses every run while a URL client is declared `LOCAL_MUTATION`: see [known gaps](reference/known-gaps.md#platform-and-provider-limits). So the gate asks only because step 4 switches the policy off. Declare your own tool server honestly when it writes: read [Declare how far you trust an MCP server](security-and-isolation.md#declare-how-far-you-trust-an-mcp-server) first.
 
    ```sh
    arhugula mcp add notes --url http://127.0.0.1:18765/mcp
@@ -418,7 +422,7 @@ Do these steps in order.
    arhugula run <home>/kit/examples/workflows/gated-tool.toml
    ```
 
-6. **Answer the gate.** The run stops at the first step and shows the call it is about to make. Type `approve`.
+6. **Answer the gate.** The run stops at the first step and shows the call it is about to make. Type `approve` within the step deadline, 30 seconds unless set. After that the run fails with `RT-FAIL-STEP-DISPATCH-TIMEOUT`; [Enable, disable and tune a provider](providers.md#enable-disable-and-tune-a-provider) shows how to raise the deadline.
 
 The prompt and the result of an approved run (*witnessed*), with the progress lines left out:
 

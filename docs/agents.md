@@ -5,6 +5,7 @@ It is also for that agent.
 After reading it you know which file gives the agent its instructions, how to add the harness section to a project, and which actions stay with the person.
 
 This page describes kit version 0.1.0.
+`arhugula --version` prints the kit version and the upstream pin of your deployment.
 It summarizes the agent's instructions and does not replace them.
 The full instructions are in [`AGENTS.md`](../AGENTS.md) at the kit root.
 If you write workflows instead, read [the authoring guide](authoring.md).
@@ -149,7 +150,7 @@ In brief:
 3. The agent asks the person every question that applies, in order, and offers each default.
 4. The agent writes the answers to a JSON file outside the repository.
 5. The agent runs `./init --answers <file>`. `init` refuses a missing answer with exit code 3 and never fills one in silently.
-6. The agent reports the outcome as printed.
+6. The agent reports the outcome as printed. The last lines of `init` give the `PATH` line for this terminal, the line to add to `~/.zshrc`, a first run command and `arhugula project add`.
 
 The full protocol, with the fields to show for each question, is in the section "Install: the init ask-protocol" of [`AGENTS.md`](../AGENTS.md).
 The questions and the dependencies are listed in [the install guide](install.md).

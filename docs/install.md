@@ -30,10 +30,17 @@ These pages write the deployment's directory, the *home*, as `<home>`. The defau
 
 This list names everything that a deployment needs on the machine: what each item is for, how to check it, and how to set it up.
 Init checks every item for you.
-For a missing item, init shows the setup command and offers to run it. It runs the command only after you agree.
-You can also set everything up by hand, before init or instead of its offers, with the commands shown here.
+For a missing item, init shows the setup command.
+You can set everything up by hand, before init or instead of its offers, with the commands shown here.
+
+Init offers to run a setup command only in one case: the setup is one safe command, and its installer is already on the machine.
+For example, init offers `brew install ollama` only when Homebrew is installed. It runs the command only after you agree.
+Init never installs Homebrew or a provider's command-line tool, and it never runs the setup command of the VM entry. You run those commands yourself.
 
 An item marked *required* stops init while it is missing. An item marked *optional* is needed only for the choice that its entry names.
+The disk space entry is neither: it is marked *checked again later* and never stops init. Preflight check P4 decides, for the home that you choose.
+
+Where an entry shows two commands, the word between them says how to read them. `Or:` means two ways to do the same thing, so run one. `Then:` means two steps, so run both in order.
 
 <!-- BEGIN GENERATED: dependencies -->
 ### D1: macOS 13 or later
@@ -269,16 +276,20 @@ Inside the Lima virtual machine, Docker Engine and Compose run the trace stack (
 
 ## Start init
 
+The commands below use the default home, `~/arhugula`. Any plain directory outside a git checkout works: put your own path in its place.
+
 1. Clone the kit into the home:
 
    ```sh
-   git clone https://github.com/thestoryportal/arhugula-harness-runtime.git <home>/kit
+   git clone https://github.com/thestoryportal/arhugula-harness-runtime.git ~/arhugula/kit
    ```
+
+   On a Mac without `git`, this first use of `git` opens Apple's dialog that installs the Command Line Tools. Finish the installation there, then run the clone again.
 
 2. Run init in a terminal:
 
    ```sh
-   <home>/kit/init
+   ~/arhugula/kit/init
    ```
 
 If the clone is somewhere else, init clones the kit into `<home>/kit` after the first group of preflight checks, and continues from that copy.
@@ -289,12 +300,44 @@ Init first makes sure that two tools exist, because init itself runs on them: `u
 When one is missing, init says what it is for and shows the setup command. It runs the command only when you type `y`.
 If you decline, init stops with exit code 3 and changes nothing.
 
+### What the first install downloads
+
+The first install takes longer than a later one, because it downloads these parts:
+
+- **The harness source:** a clone of the upstream repository.
+- **The Python dependencies:** the packages of the harness, which uv keeps in its cache.
+- **The Ollama model:** about 2 GB, when you use Ollama with its default model.
+- **The VM:** 5 to 10 minutes the first time, when you answer `kit` at question 11. `kit` is the default when Lima is installed. Init creates that VM only when 12 GiB are free under the home.
+
+With every download in the cache, the install itself takes about a minute.
+
+### Start on a Mac with nothing installed
+
+On such a Mac, init stops more than once, and each time it names what to set up. Set it up, then run init again.
+
+1. **`uv` and CPython 3.12:** init offers to install both, as described above.
+2. **A provider:** init stops in the dependency stage with this message, because no provider is set up yet:
+
+   ```text
+   init cannot continue until these are in place: D14 At least one usable provider
+   ```
+
+3. **The shortest way on:** set up Ollama, the one provider that needs no account. Install the app from https://ollama.com/download and open it, then pull the model:
+
+   ```sh
+   ollama pull llama3.2:3b
+   ```
+
+4. **Init again:** run `~/arhugula/kit/init` once more.
+
+Lima is missing on such a Mac too, so the default at question 11 is `n` and init creates no VM. The [dependencies](#dependencies) list shows how to install Lima first if you want the trace stack.
+
 ## What init does, in order
 
 Each stage either completes or stops init with the failure and its fix.
 
 1. **Survey.** Init looks at the machine. It changes nothing.
-2. **Dependency stage.** Init checks the 16 dependencies, explains each missing one, offers its setup command, and checks again.
+2. **Dependency stage.** Init checks the 16 dependencies and explains each missing one. Where it may run the setup command, it offers to, and then checks again.
 3. **Questions.** Init asks up to 14 questions.
 4. **Preflight, machine.** Init runs the checks that need nothing installed. So far, nothing was written.
 5. **Install.** Init fetches the harness at the pin and builds seven packages and two lock files with hashes. It runs upstream's packaging gate, then creates the environment. With a warm cache this takes about a minute.
@@ -305,15 +348,22 @@ Each stage either completes or stops init with the failure and its fix.
 10. **Isolation tier 3.** When you chose it, init sets up the sandbox for tool calls.
 11. **Smoke runs.** Init runs one short workflow on the default provider. It runs a second one on Ollama when you selected Ollama and another provider is the default, and one more in the attached project.
 
-Init ends with the home, the command path and the line that adds the command to your shell:
+Init ends with the home, the command path and four next steps:
 
 ```text
 The deployment is ready.
   home:    <home>
   command: <home>/bin/arhugula
-  add it to your shell:  export PATH="<home>/bin:$PATH"
-  next:    arhugula project add <path-to-a-repository>
+  use it in this terminal:      export PATH="<home>/bin:$PATH"
+  keep it for new terminals:    echo 'export PATH="<home>/bin:$PATH"' >> ~/.zshrc
+  run a workflow:               arhugula run ollama-first.toml --provider ollama
+  attach your own repository:   arhugula project add <path-to-a-repository>
 ```
+
+- **Use it in this terminal:** paste the first `export` line, and `arhugula` works in the terminal that you have open.
+- **Keep it for new terminals:** paste the `echo` line once. It adds the same line to `~/.zshrc`.
+- **Run a workflow:** a first run that works on your deployment. With Ollama selected it is the line shown here. Without Ollama it is `arhugula run minimal.toml`, on your default provider.
+- **Attach your own repository:** `arhugula project add` makes a repository of yours a project of this deployment.
 
 When init stops early, its exit code says why:
 
@@ -352,10 +402,21 @@ The first word of a line gives the state:
 | `ok` | The dependency is in place. | Goes on. |
 | `absent` | An optional dependency is missing. | Prints its guide and goes on. |
 | `MISSING` | A required dependency is missing. | Prints its guide. Init stops after the list if the dependency is still missing. |
+| `low` | Less than 3 GiB of disk space is free. | Prints its guide and goes on. Preflight check P4 checks the space again, for the home that you choose. |
 
 The guide for a missing dependency says what it is for and what needs it. It gives the setup command, any step after that, and the command to check by hand.
-Where the setup is one safe command, init asks ``Run `<command>` now? [y/N]``.
+
+Where the setup is one safe command and its installer is on the machine, init asks ``Run `<command>` now? [y/N]``.
 The command runs only when you type `y`. Init then checks the dependency again.
+For Ollama, init asks about each of the two steps in turn.
+
+When a required dependency is still missing after the list, init stops with exit code 3 and names it:
+
+```text
+init cannot continue until these are in place: D14 At least one usable provider
+```
+
+This is the message on a Mac where no provider is set up yet. Ollama is the provider that needs no account: set up the Ollama entry and its model entry, then run init again.
 
 ## Answer the questions
 
@@ -397,8 +458,8 @@ These prompts are from a real init (*witnessed*):
 Some questions need more than the prompt says:
 
 - **Question 2, providers:** the note under the options explains the limits of Codex and of the Gemini CLI. Init never proposes Codex as the default provider when you selected another provider.
-- **Question 11, observability:** `kit` creates the kit's own VM under `<home>/lima`. The first time takes 5 to 10 minutes, and about 1 minute when the image is cached. **Docker Desktop is not required and is never used.** A Lima instance that was built for another processor type is not offered, and the prompt says why.
-- **Question 9, audit signing:** init does not create the signing keys, and a run cannot start while they are missing. `arhugula audit keygen` creates them, and it needs a deployment that init has already configured. On a first install with `s`, answer `n` at question 14. When init has ended, run `arhugula audit keygen`, then run the smoke workflows with `<home>/kit/init --smoke`.
+- **Question 11, observability:** `kit` creates the kit's own VM under `<home>/lima`. Init creates it only when 12 GiB are free under the home. The first time takes 5 to 10 minutes, and about 1 minute when the image is cached. **Docker Desktop is not required and is never used.** A Lima instance that was built for another processor type is not offered, and the prompt says why.
+- **Question 9, audit signing:** when you choose `s`, init creates both signing keys itself, before the first run. Every ledger is then signed from its first entry.
 
 The list below gives every question as init prints it, with its default, the reason init asks, and when it is asked.
 
@@ -464,7 +525,7 @@ The list below gives every question as init prints it, with its default, the rea
 > Workload classes to bind? Type the numbers.
 
 - Default: all four.
-- Why init asks: A workload class is the kind of work a workflow declares. A workflow runs only when its class is bound, and all four are needed for the shipped examples and the daemon, so keep all four unless you know you want fewer.
+- Why init asks: A workload class is the kind of work a workflow declares. A workflow runs only when its class is bound. The shipped examples and the daemon need all four, so keep all four unless you know you want fewer.
 - Asked: always.
 
 ### Question 9: `features`
@@ -700,7 +761,9 @@ It tests three groups:
 The four runs use the Ollama provider, so they cost nothing. When Ollama is not enabled, the self-test says that it did not exercise them.
 
 The self-test leaves your configuration, ledgers, memory and traces as they were.
-It works on values in memory and on scratch files under `<home>/run/selftest` and `<home>/state/self-test`, and it removes both directories afterwards.
+It breaks values in memory and scratch files under `<home>/run/selftest`.
+The four runs use their own tenant, their own ledger under `<home>/state/self-test` and their own span store, and they send no trace to the collector.
+The self-test removes both directories afterwards.
 
 This excerpt is from a real self-test (*witnessed*), trimmed. Long lines are cut by the program:
 
@@ -718,6 +781,8 @@ preflight:
         FAIL: `uv` is not on PATH | fix: brew install uv
   ok    P3 [uv has no CPython 3.12]
         FAIL: uv has no CPython 3.12 | fix: uv python install 3.12
+  --    P4
+        not exercised: a full disk cannot be simulated safely; the check compares free space with the need
 ...
   ok    P7 [Ollama does not answer]
         FAIL: no answer from Ollama at http://127.0.0.1:9 | fix: ollama serve
@@ -734,15 +799,19 @@ runtime:
         exit 1: detail:    workflow execution returned status='failed' with fail_class="step-failure: RetryBreakerFallbackExhaustedError: RT-FAIL-FALLBACK-EXHAUSTED: 
   ok    step deadline [a step may take 10 milliseconds and a model call takes longer]
         exit 1: detail:    workflow execution returned status='failed' with fail_class='step-failure: RT-FAIL-STEP-DISPATCH-TIMEOUT: step dispatch exceeded 0.01s boun
+
+22 guard rail(s) refused as expected. 4 could not be exercised here; the lines marked -- say why.
 ```
 
 Read each pair of lines like this:
 
 - **`ok`:** the guard rail refused as expected. The text in square brackets says what was broken, and the second line shows the refusal.
 - **`FAIL` as the first word:** a guard rail did not refuse. The self-test then exits with code 6. Please file an issue.
-- **Not exercised:** some cases cannot be broken safely on a real machine, for example a full disk. The second line then starts with `not exercised:` and gives the reason.
+- **`--`:** the case was not exercised. Some cases cannot be broken safely on a real machine, for example a full disk. The second line then starts with `not exercised:` and gives the reason.
 
-In the witnessed run, 14 preflight checks failed with their fix, and 4 were stated as not exercised.
+The last line counts both kinds. In the witnessed run, 22 guard rails refused as expected: 4 dependency cases, 14 preflight checks and the 4 runs. Another 4 preflight checks, P4, P9, P13 and P18, were not exercised.
+
+P18 is one of them, because breaking it would break the deployment. If `arhugula doctor` ever reports P18 as failed, the fix is `arhugula init --reverify`.
 
 ## Move the home with relocate
 
@@ -774,9 +843,23 @@ In the witnessed run, 14 preflight checks failed with their fix, and 4 were stat
    <new-home>/bin/arhugula observability up
    ```
 
+6. Write the harness section again in each project that carries it. The section holds the path of the command, and `relocate` does not change a project's files:
+
+   ```sh
+   <new-home>/bin/arhugula agent context install --project <project>
+   ```
+
+   [Add the harness section to a project](agents.md#add-the-harness-section-to-a-project) describes the section.
+
 After the move, `relocate` runs init from the new place with `--reverify --reinstall`.
 That rebuilds the environment, because its scripts carry their own path. It also regenerates every config.
 The runtime then verifies the state root at its new place. The smoke runs repeat when your answers include them.
+
+The rebuild keeps the environment it replaces at `<new-home>/env.rollback`.
+That copy was built for the earlier home, so do not roll back to it: see [Rebuild at the same pin](upgrade.md#rebuild-at-the-same-pin).
+
+The move takes the state root with it, pause journals included.
+Resuming a gate on hold after a move was not witnessed, so answer the gates on hold first: `arhugula gate list` shows them.
 
 `relocate` refuses, and moves nothing, in these cases:
 

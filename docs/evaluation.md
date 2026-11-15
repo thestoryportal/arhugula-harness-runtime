@@ -73,7 +73,8 @@ The same `--seed` draws the same set from the same store; the default seed is 0.
 
 The verb refuses if a holdout set already exists.
 Add `--replace` to draw a new one.
-`--replace` replaces only `holdout.json`: the earlier reviews and assertion files stay, and `arhugula eval status` still counts and runs them.
+`--replace` first moves the earlier set, its reviews and its assertion files aside, into `<primitive>.replaced-<time>` beside the primitive's directory.
+The verb prints where they went, and `arhugula eval status` no longer counts or runs them.
 
 ### Step 2: review each trace
 
@@ -319,7 +320,14 @@ arhugula eval drift show routing_accuracy_holdout --judge-value 0.67
 ```
 
 Name the primitive when you pass `--judge-value`.
-Without a name, the verb uses that one value for every primitive that has a threshold, in place of the computed cache hit rate too.
+Without a name, the verb stops with exit code 2 and this message:
+
+```text
+--judge-value is your measurement of one primitive; name the primitive it belongs to
+```
+
+`--judge-value` never replaces a value that spans give.
+For `cache_hit_rate_alignment_floor`, the verb reports the computed rate and ignores your value.
 
 When a value is available, the verb prints the current value, the threshold, the window, and `DRIFT` or `within the floor`.
 The rule is upstream's: drift when the current value is lower than the threshold.
@@ -328,6 +336,7 @@ The rule is upstream's: drift when the current value is lower than the threshold
 | --- | --- |
 | No primitive drifted, or no value was available | 0 |
 | At least one primitive drifted | 1 |
+| `--judge-value` names no primitive | 2 |
 | The primitive has no threshold | 3, with the fix printed |
 
 `arhugula eval drift show` writes no drift event to a trace.

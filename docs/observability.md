@@ -111,6 +111,9 @@ Two more verbs read the same store:
 arhugula trace export --trace-id <trace-id> --out trace.jsonl
 ```
 
+`arhugula doctor --self-test` leaves no trace here.
+Its runs use their own tenant, ledger and span store, and they send no trace to the collector.
+
 The store keeps spans for 7 days by default.
 The feature `collector-tuning` raises that to 30 days.
 `arhugula feature show collector-tuning` shows what it changes, and `arhugula feature enable collector-tuning` turns it on.
@@ -170,6 +173,7 @@ The verb does not check that; `arhugula observability up` does, and refuses if t
 `arhugula observability vm delete --yes` also deletes the traces and the Grafana data stored inside the VM.
 It refuses while isolation tier 3 is on, because that tier runs tools in this VM.
 See [security and isolation](security-and-isolation.md).
+It also refuses while the stack is running in this VM, and names the fix: `arhugula observability down`.
 
 This is `arhugula observability vm status` on the development deployment (*witnessed*):
 
@@ -430,6 +434,7 @@ The same verb reads the run logs directly, with the tier on or off:
 
 `arhugula logs` takes no `--project`.
 A run log's name starts with `run-<project>-`, so you can pick a project's logs from the list.
+A run log has mode 0600, because it can quote prompts and tool output.
 
 ## How runs are labelled and sampled
 
@@ -454,7 +459,7 @@ That setting changes nothing at this pin (*upstream limit*).
 ## Limits
 
 - **24-hour retention.** Tempo keeps traces for 24 hours. For older runs, use the local span store, which keeps 7 days by default.
-- **Empty metric panels after a Tempo restart.** Metric panels stay empty until the next run writes a span (*upstream limit* of Tempo's generator). Run any workflow to fill them.
+- **Empty metric panels after a Tempo restart.** Metric panels stay empty until the next run writes a span. This is a limit of Tempo's metrics generator, not of the harness. Run any workflow to fill them.
 - **No finish reasons.** The harness declares the finish-reason attribute and never writes it to a span (*upstream limit*). A failed call shows only as an error status.
 - **No per-step span.** A workflow step has no span of its own (*upstream limit*).
 - **Subscription routes show no cost.** Calls through `claude_code`, `codex`, `gemini` and `antigravity` are never priced, by design (*upstream limit*). They add nothing to the Cost dashboard. That does not mean the calls were free under your subscription.

@@ -532,6 +532,10 @@ def _policy_set(args: argparse.Namespace) -> int:
     path = ("runtime", "hitl_auto_approve_policy", POLICY_KEYS[args.setting])
     deploy.apply(deployment, overlay.set_value(deployment.spec, "", path, args.state == "on"))
     say(f"{args.setting}: {args.state}")
+    if args.state == "off":
+        say("note: answer a gate within the step deadline (30 seconds unless set). After that the "
+            "run fails with RT-FAIL-STEP-DISPATCH-TIMEOUT. For more time: arhugula config set "
+            "step_dispatch_timeout_seconds <seconds>, and drain_timeout_seconds for the whole run.")
     return Exit.OK
 
 
@@ -586,6 +590,9 @@ def _mcp_add(args: argparse.Namespace) -> int:
         "transport": args.transport,
         "trust_level": args.trust,
         "blast_radius": args.blast_radius,
+        # The runtime stamps each tool from `default_blast_radius`; its gates and its tier
+        # computation never read `blast_radius`. Both carry the one declared value.
+        "default_blast_radius": args.blast_radius,
         "connection_url": args.url,
     }
     if args.auth_secret_name:
@@ -601,8 +608,9 @@ def _mcp_add(args: argparse.Namespace) -> int:
     say(f"check it: arhugula mcp test {args.name}")
     if args.blast_radius != "READ_ONLY":
         say("note: the runtime runs a client that can change things at a sandbox tier above 1. "
-            "This deployment provides tier 3 only, and only for stdio clients; a tool call that "
-            "needs a tier it does not have is refused with RT-FAIL-SANDBOX-DRIVER-UNAVAILABLE.")
+            "This deployment provides tier 3 only, and only for stdio clients. While a client "
+            "needs a tier it does not have, the runtime refuses every run at its start "
+            f"(SandboxDriverUnavailableError). To undo: arhugula mcp remove {args.name}")
     return Exit.OK
 
 

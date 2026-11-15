@@ -47,7 +47,7 @@ Three markers, always in italics, tell you how far to trust a statement:
 - ***kit extension*:** this kit adds it. It is not part of the upstream harness.
 - ***upstream limit*:** it does not exist, or does not work, at the pinned upstream commit.
 
-[Known gaps](docs/reference/known-gaps.md) lists every upstream limit and every kit extension in one place.
+[Known gaps](docs/reference/known-gaps.md) lists the upstream limits, the kit extensions, and the platform and provider limits in one place.
 
 ### Providers
 
@@ -61,7 +61,7 @@ Details: [providers](docs/providers.md).
 
 ### Routing
 
-- **One routing rule:** the config's first fallback chain serves every step; `--provider` (and `--model`) override it for one run; a manifest's own model binding does not select the provider.
+- **One routing rule:** the config's first fallback chain serves every step; `--provider` (and `--model`) override it for one run; a manifest's own model binding does not select the provider. A more specific setting wins over the chain: a per-step `model_binding` in a manifest, a workload override or a role binding. See [How routing picks a provider](docs/providers.md#how-routing-picks-a-provider).
 - **A fallback provider:** when the default provider fails, the chain's fallback provider takes the step.
 - **Finer routing by verb:** `arhugula routing` sets the chain, a provider's model, a binding for a role or a workload class, and retry policies.
 
@@ -71,7 +71,7 @@ Details: [providers](docs/providers.md) and [configure](docs/configure.md).
 
 - **Six topologies ship:** single-threaded-linear, parallelization, orchestrator-workers, evaluator-optimizer, hierarchical-delegation and decentralized-handoff. Upstream has an example of each, and `arhugula workflow list` shows them.
 - **A manifest from a topology:** `arhugula workflow new <topology> --name <name>` writes a manifest that loads in the runtime (*kit extension*).
-- **Isolated agent steps:** each agent step is one short provider call. It has no session, no tools of its own and a scrubbed environment.
+- **Isolated agent steps:** each agent step is one short provider call. It has no session and a scrubbed environment. With Claude Code and Codex it also has no tools of its own. Gemini and Antigravity keep their own tools and start in the project's repository: see [What each call can see](docs/providers.md#what-each-call-can-see).
 - **One process, no multiplexer:** the agents of a topology run concurrently inside one process. No terminal multiplexer is involved.
 - **No plans from replies:** the runtime does not build a worker plan from a lead model's reply (*upstream limit*; upstream issue: see known-gaps).
 
@@ -116,7 +116,7 @@ Details: [memory](docs/memory.md).
 
 ### MCP tools
 
-- **Tool servers by verb:** `arhugula mcp add` connects a Model Context Protocol (MCP) tool server with a trust level and a blast radius. `arhugula mcp test` lists its tools.
+- **Tool servers by verb:** `arhugula mcp add` connects a Model Context Protocol (MCP) tool server with a trust level and a blast radius. `arhugula mcp test` lists its tools. A `stdio` server needs isolation tier 3 and the virtual machine: see [Give your own MCP client a sandbox](docs/security-and-isolation.md#give-your-own-mcp-client-a-sandbox). It also fails every run while an HTTP client is configured: see [stdio and HTTP MCP clients together](docs/troubleshooting.md#cancellederror-cancelled-via-cancel-scope-stdio-and-http-mcp-clients-together).
 - **An example server:** `examples/mcp/notes_server.py` offers the tools `notes.read` and `notes.write`.
 - **A daemon with a limit:** `arhugula daemon start` runs the harness as a service. Its own MCP endpoint is a Unix socket, which MCP clients such as Claude Code cannot connect to (*upstream limit*). `arhugula daemon expose` prints the working alternative.
 
@@ -134,7 +134,8 @@ Details: [operate](docs/operate.md).
 
 - **Signed audit entries:** `arhugula audit keygen` creates two local keys (*kit extension*), and `arhugula audit enable` signs every new audit entry.
 - **Full verification:** a ledger that is signed from its first entry verifies in full with `arhugula audit verify --signatures` (*witnessed*).
-- **Unsigned history stays unsigned:** a ledger that began unsigned keeps hash-chain verification only (*upstream limit*). Choose audit signing at init to sign every ledger from the start. The [install page](docs/install.md#answer-the-questions) gives the order for the keys.
+- **Unsigned history stays unsigned:** a ledger that began unsigned keeps hash-chain verification only (*upstream limit*). Authoring a cutover record over it with upstream's `harness migrate-audit-sidecar --author` was tried. Verification then fails with `signature-invalid` on the unsigned entries (*witnessed*).
+- **Sign from the start:** choose audit signing at init, and every ledger is signed from its first entry. Init then creates both keys itself.
 
 Details: [security and isolation](docs/security-and-isolation.md).
 
@@ -176,31 +177,53 @@ You need a Mac and a terminal. Assume nothing else is installed: init checks eve
 
 The [dependencies section of the install page](docs/install.md#dependencies) gives the purpose, the check and the setup command for each one.
 
+Init installs little by itself. It offers to run a setup command only when that is one safe command and its installer is already on the machine.
+Init never installs Homebrew or a provider's command-line tool, and it never runs the setup command of the VM row. You run those commands yourself.
+
+On a Mac with nothing installed, init therefore stops at the dependency `At least one usable provider` until you set one provider up.
+Ollama is the provider that needs no account.
+
 ## Install it and run the first workflows
 
-Choose a directory for the deployment, the *home*. These pages write it as `<home>`. The default is `~/arhugula`.
+The deployment lives in one directory, the *home*. These pages write it as `<home>`.
+The commands below use the default home, `~/arhugula`. Any plain directory outside a git checkout works: put your own path in its place.
 
 1. Clone the kit into the home:
 
    ```sh
-   git clone https://github.com/thestoryportal/arhugula-harness-runtime.git <home>/kit
+   git clone https://github.com/thestoryportal/arhugula-harness-runtime.git ~/arhugula/kit
    ```
+
+   On a Mac without `git`, this first use of `git` opens Apple's dialog that installs the Command Line Tools. Finish the installation there, then run the clone again.
 
 2. Run init in a terminal:
 
    ```sh
-   <home>/kit/init
+   ~/arhugula/kit/init
    ```
 
 3. Answer what init asks. Press Enter to accept the default that each prompt shows.
 
-4. Add the command to your shell with the `export PATH=...` line that init prints last.
+4. When init stops because a dependency is missing, set that dependency up with the command that init shows. Then run init again.
+
+5. Make the command available with the two `export PATH=...` lines that init prints last: one for this terminal, one for new terminals.
 
 If you cloned the kit somewhere else, init clones it into `<home>/kit` and continues from there.
 
+### What the first install downloads
+
+The first install takes longer than a later one, because it downloads these parts:
+
+- **The harness source:** a clone of the upstream repository.
+- **The Python dependencies:** the packages of the harness.
+- **The Ollama model:** about 2 GB, when you use Ollama with its default model.
+- **The VM:** 5 to 10 minutes the first time, when you answer `kit` at question 11. `kit` is the default when Lima is installed. Init creates that VM only when 12 GiB are free.
+
+With every download in the cache, the install itself takes about a minute.
+
 ### What init asks, in order
 
-Init first offers to set up a missing dependency. It shows the command and runs it only after you type yes. Then it asks up to 14 questions:
+Init first checks the dependencies and shows the setup command for each missing one. Where init may run that command, it asks first and runs it only after you type yes. Then it asks up to 14 questions:
 
 1. The deployment home directory.
 2. Which providers to make available.
@@ -221,19 +244,13 @@ The [install page](docs/install.md) shows every prompt with its default and its 
 
 ### What success looks like
 
-Init ends with short test runs, the smoke runs, and then prints where the deployment is. This output is from a real init (*witnessed*):
+Init ends with short test runs, the smoke runs. This output is from a real init (*witnessed*):
 
 ```text
 Smoke runs:
   primary route (claude_code): exit 0, status: completed
   Ollama route: exit 0, status: completed
   project demo: exit 0, status: completed
-
-The deployment is ready.
-  home:    <home>
-  command: <home>/bin/arhugula
-  add it to your shell:  export PATH="<home>/bin:$PATH"
-  next:    arhugula project add <path-to-a-repository>
 ```
 
 Each line that ends in `status: completed` is one workflow that ran from start to finish:
@@ -243,6 +260,27 @@ Each line that ends in `status: completed` is one workflow that ran from start t
 - **The project line:** a run in an attached project. It appears when a project is attached. Here the project is named `demo`.
 
 If a smoke run does not complete, init stops with exit code 1 and names `arhugula doctor` as the next step.
+
+After the smoke runs, init prints where the deployment is and what to do next:
+
+```text
+The deployment is ready.
+  home:    <home>
+  command: <home>/bin/arhugula
+  use it in this terminal:      export PATH="<home>/bin:$PATH"
+  keep it for new terminals:    echo 'export PATH="<home>/bin:$PATH"' >> ~/.zshrc
+  run a workflow:               arhugula run ollama-first.toml --provider ollama
+  attach your own repository:   arhugula project add <path-to-a-repository>
+```
+
+Read the last four lines like this:
+
+- **Use it in this terminal:** paste the first `export` line, and `arhugula` works in the terminal that you have open.
+- **Keep it for new terminals:** paste the `echo` line once. It adds the same line to `~/.zshrc`, the file that every new terminal reads.
+- **Run a workflow:** a first run that works on your deployment. With Ollama selected it is the line shown here. Without Ollama it is `arhugula run minimal.toml`, on your default provider.
+- **Attach your own repository:** `arhugula project add` makes a repository of yours a project of this deployment.
+
+`arhugula --version` prints the kit version and the upstream pin.
 
 ## Check a deployment at any time
 

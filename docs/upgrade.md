@@ -31,6 +31,12 @@ cat <home>/kit/PIN
 0a75b1d06707faebee892f8f55ee04f1a2b20b28
 ```
 
+`arhugula --version` prints the kit's version and the same commit, read from `PIN`:
+
+```text
+arhugula kit 0.1.0; upstream pin 0a75b1d06707faebee892f8f55ee04f1a2b20b28
+```
+
 The environment keeps its own record of the commit it was built from, in `<home>/env/.arhugula-pin`. `arhugula upgrade` compares the commit you ask for with that record, not with `PIN`.
 
 Three places follow the pin:
@@ -94,7 +100,16 @@ arhugula: a harness daemon is running (pid <pid>); stop it before you upgrade
    arhugula daemon stop --project <project>
    ```
 
-3. Back up the state root. An upgrade does not touch `<home>/state`, and a backup costs little:
+3. Answer the gates on hold:
+
+   ```sh
+   arhugula gate list
+   ```
+
+   An upgrade and a rollback do not touch `<home>/state`, where the pause journals are.
+   Resuming a gate that was put on hold under another upstream commit was not witnessed.
+
+4. Back up the state root. An upgrade does not touch `<home>/state`, and a backup costs little:
 
    ```sh
    arhugula state backup
@@ -146,14 +161,17 @@ flowchart TD
     C --> D["build wheels and hashed locks"]
     D --> E{"packaging gate passes?"}
     E -- no --> R2["stop, exit 5; env and PIN unchanged"]
-    E -- yes --> F["move env to env.rollback, install new env"]
+    E -- yes --> F["set env aside as env.previous, install new env"]
     F --> G{"new env complete?"}
-    G -- no --> R3["put env.rollback back, exit 5"]
-    G -- yes --> H["write the new pin to PIN"]
+    G -- no --> R3["put env.previous back, exit 5; env.rollback kept"]
+    G -- yes --> K["env.previous replaces env.rollback"]
+    K --> H["write the new pin to PIN"]
     H --> I["re-verify"]
 ```
 
-In words: the upgrade refuses while a daemon runs. It then builds the new commit beside the environment in use. Only a build that passes the packaging gate replaces the environment, and the earlier environment is kept for a rollback. The `PIN` file changes last, and then the re-verify runs.
+In words: the upgrade refuses while a daemon runs. It then builds the new commit beside the environment in use. Only a build that passes the packaging gate replaces the environment.
+
+The environment in use is set aside while the new one is made, and it comes back when the new one fails or the install is interrupted. When the new one has passed its checks, the earlier environment becomes the rollback copy. The `PIN` file changes last, and then the re-verify runs.
 
 | Step | What happens | If it fails |
 | --- | --- | --- |
@@ -161,8 +179,8 @@ In words: the upgrade refuses while a daemon runs. It then builds the new commit
 | 2 | `<home>/upstream` is checked out at the new commit. The network is used only when the checkout does not hold that commit yet. | The environment and `PIN` are unchanged. |
 | 3 | The seven wheels and the two hashed lock files are built into `<home>/dist`. | The environment and `PIN` are unchanged. |
 | 4 | Upstream's packaging gate checks the build. It must print `ready: yes`. | The environment and `PIN` are unchanged. |
-| 5 | The copy at `<home>/env.rollback` is removed, and the environment in use moves there. A new environment is created at `<home>/env` and installed from the hashed locks and the wheels. | The environment in use is moved back to `<home>/env`. No copy is left at `<home>/env.rollback`. |
-| 6 | The new environment is checked: it imports the harness from its own files, and its three commands exist. Then it records its commit in `<home>/env/.arhugula-pin`. | The environment in use is moved back to `<home>/env`. No copy is left at `<home>/env.rollback`. |
+| 5 | The environment in use is set aside at `<home>/env.previous`. A new environment is created at `<home>/env` and installed from the hashed locks and the wheels. | The environment in use is moved back to `<home>/env`. The copy at `<home>/env.rollback` is untouched. |
+| 6 | The new environment is checked: it imports the harness from its own files, and its three commands exist. Then it records its commit in `<home>/env/.arhugula-pin`. Last, the environment that was set aside replaces the copy at `<home>/env.rollback`. | The environment in use is moved back to `<home>/env`. The copy at `<home>/env.rollback` is untouched. |
 | 7 | The kit writes the new commit id to `<home>/kit/PIN`. | |
 | 8 | The re-verify runs. See the next section. | The new environment stays. Roll back if you need to. |
 
@@ -180,12 +198,13 @@ Know these facts about a failed install:
 - **The environment and `PIN` are unchanged.** Runs work as before. If you updated the kit first, `PIN` already names the new commit, and the environment is still the earlier one.
 - **The source and the wheels may be ahead.** `<home>/upstream` may already be at the new commit. Step 3 empties `<home>/dist` before it builds, so `<home>/dist` may hold the new wheels or an incomplete build. The environment in use does not read either place. The next upgrade or `arhugula upgrade --reinstall` brings them back in step.
 - **Only one earlier environment is kept.** Each successful upgrade replaces `<home>/env.rollback`.
-- **A failure in step 5 or 6 removes that copy.** After install exit code 76, 77 or 78, `<home>/env.rollback` is gone or incomplete, and `arhugula upgrade --rollback` has nothing to return to. The environment in use is not affected.
-- **An interrupted install is not cleaned up.** The install does not catch Ctrl-C or a shutdown. If `<home>/env/.arhugula-pin` is missing afterwards, the install stopped in step 5 or 6: the environment you had is at `<home>/env.rollback`, and `arhugula` may not start. Put it back by hand:
+- **A failed install keeps the rollback copy.** The install replaces `<home>/env.rollback` only after the new environment has passed its checks. After install exit code 76, 77 or 78, that copy still holds the environment that the last successful upgrade replaced.
+- **An interrupted install puts the environment back.** When you press Ctrl-C in step 5 or 6, or the terminal closes, the install moves the environment in use back to `<home>/env`. It prints `install: interrupted` and exits with code 130.
+- **A killed install can leave the environment set aside.** A power loss or a forced kill in step 5 or 6 gives the install no chance to put the environment back. Then the environment you had is at `<home>/env.previous`, and `arhugula` may not start. Put it back by hand before you run another upgrade, because the next install removes a leftover `<home>/env.previous`:
 
   ```sh
   rm -rf <home>/env
-  mv <home>/env.rollback <home>/env
+  mv <home>/env.previous <home>/env
   ```
 
 The install's own exit code is in the message. It tells you which stage stopped:
@@ -199,6 +218,7 @@ The install's own exit code is in the message. It tells you which stage stopped:
 | 74 | Exporting the hashed locks. | `install-export.log` |
 | 75 | Upstream's packaging gate refused the build. | `install-gate.log` |
 | 76, 77, 78 | Setting the environment in use aside, or creating, filling or checking the new environment. | `install-env.log` |
+| 130 | The install was interrupted in step 5 or 6. The environment in use is back in place. | |
 
 ## What the re-verify runs
 
@@ -239,6 +259,10 @@ arhugula upgrade --reinstall
 
 Use it when the environment is damaged. For example, a file under `<home>/env` was changed or removed. After that rebuild, `<home>/env.rollback` holds the damaged environment, so do not roll back to it.
 
+The same holds after `arhugula relocate`, which rebuilds the environment in the same way.
+`<home>/env.rollback` then holds the environment that was built for the earlier home, and its scripts carry that path.
+A rollback to it was not tried.
+
 You do not need `--reinstall` after you update the kit. When a `git pull` in `<home>/kit` changes `PIN`, plain `arhugula upgrade` reads the new `PIN`, finds that the environment records another commit, and upgrades to the new one.
 
 Without `--pin` and without `--reinstall`, `arhugula upgrade` changes nothing when the environment is already at the commit in `PIN`. It prints that the deployment is already at that commit and exits 0. It still refuses with exit code 3 while a daemon runs.
@@ -256,11 +280,14 @@ The rollback needs no network and no build:
 3. It writes the earlier commit id back to `<home>/kit/PIN`. To move forward again later, name the commit: `arhugula upgrade --pin <sha>`.
 4. It runs the same re-verify as an upgrade. That checks `<home>/upstream` out at the earlier commit and generates every config again.
 
-If no earlier environment exists, the rollback refuses with exit code 3:
+If no complete earlier environment exists, the rollback refuses with exit code 3 and changes nothing:
 
 ```text
-arhugula: there is no earlier environment at <home>/env.rollback
+arhugula: there is no complete earlier environment at <home>/env.rollback to return to
+  fix: arhugula upgrade --pin <sha> installs any commit again
 ```
+
+An earlier environment is complete when it holds its commit record, `.arhugula-pin`. A deployment that has never finished an upgrade or a rebuild has none, because the first install replaces nothing.
 
 After a rollback, `<home>/dist` still holds the wheels of the last build. The next upgrade or `--reinstall` replaces them.
 

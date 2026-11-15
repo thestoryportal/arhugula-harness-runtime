@@ -17,6 +17,7 @@ Search this page for a few words of your message. For how to run things when not
 - [The virtual machine and the trace stack](#the-virtual-machine-and-the-trace-stack)
 - [Audit verification](#audit-verification)
 - [The daemon](#the-daemon)
+- [Upgrade and rollback](#upgrade-and-rollback)
 - [Sources](#sources)
 
 ## Read a refusal before you act
@@ -40,7 +41,7 @@ Three commands help with every failure:
 | Command | What it tells you |
 | --- | --- |
 | `arhugula doctor` | Runs every dependency and preflight check again. It changes nothing. |
-| `arhugula doctor --self-test` | Breaks one precondition at a time and shows that each refusal fires. It leaves the deployment as it was. |
+| `arhugula doctor --self-test` | Breaks one precondition at a time and shows that each refusal fires. Its runs use their own tenant, ledger and span store, and they send no trace to the collector. It leaves the deployment as it was. |
 | `arhugula logs` | Shows the newest run's log, with the runtime's own error lines. |
 
 Here is a refusal you can produce safely. The manifest does not exist, so the kit refuses with exit code 3 and changes nothing.
@@ -81,12 +82,13 @@ arhugula: init cannot continue until these are in place: D5 uv
   fix: follow the `set it up` lines above, then run init again
 ```
 
-- **Cause:** a tool that the deployment needs is not installed. Init installs nothing on its own.
+- **Cause:** a tool that the deployment needs is not installed. Init installs nothing on its own. It offers to run a setup command only when that step is one safe command and its installer is on the machine. It never installs Homebrew or a provider CLI.
 - **Fix:** run the `set it up` command that init printed above the message, then run init again. Every dependency and its setup command is listed in [install](install.md#dependencies).
 - **Prevent:** `<home>/kit/init --questions-json` lists every dependency and whether it is ready, without changing anything. It runs on `uv` and CPython 3.12 itself, so without those two it prints the first message above.
 - **Status:** *witnessed* in `doctor --self-test`, for `uv` and for the Xcode Command Line Tools.
 
 A missing optional dependency, such as Lima or Ollama, does not stop init. Init prints the same guide and goes on.
+One required row depends on the optional ones: `At least one usable provider`. On a Mac with no provider set up, init stops at that row until one provider is installed and signed in. Ollama is the one that needs no account.
 
 ## Preflight checks
 
@@ -117,6 +119,11 @@ The checks below have a short answer. Checks with a longer story have their own 
 | P17 | `the embedding model is not in place at <home>/models/bge-small-en-v1.5 (with its SHA256SUMS)` | Offline embedding routing is on and the model files are missing. | Follow `Offline embedding routing` in [configure](configure.md), then run init again. | `arhugula doctor` |
 
 P2, P3, P15, P16 and P17 are *witnessed* in `doctor --self-test`. P4 is not exercised there, because a full disk cannot be simulated safely.
+The self-test marks a case that it does not exercise with `--`, and its last line counts both kinds (*witnessed*):
+
+```text
+22 guard rail(s) refused as expected. 4 could not be exercised here; the lines marked -- say why.
+```
 
 ## The state root and the first run
 
@@ -182,7 +189,7 @@ Upstream's name for this failure is `FreshRunAdmissionError`. The line names no 
 
 - **Cause:** every fresh run records itself in the pause-journal directory before its first step, whether or not durable pause is on. The runtime finds that directory through the installation-state document, `<home>/env/etc/arhugula/installation-state.json`. With `(unbound)` the document is missing. With `(missing)` the directory it names, `<home>/state/pause-journal`, does not exist.
 - **Fix:** run `<home>/kit/init --reverify`. It writes the document again and creates the directory. Then stop and start any daemon, because a daemon reads the document only when it starts.
-- **Prevent:** change the environment only through `arhugula upgrade` and `arhugula relocate`. Both write the document again. Check P18 in `arhugula doctor` proves that the root resolves. When it does not, P18 prints `the pause-journal root does not resolve (<cause>)` with the fix `arhugula init --reconfigure`. That fix works too, but it asks every question again; `--reverify` keeps your answers.
+- **Prevent:** change the environment only through `arhugula upgrade` and `arhugula relocate`. Both write the document again. Check P18 in `arhugula doctor` proves that the root resolves. When it does not, P18 prints `the pause-journal root does not resolve (<cause>)` with the fix `arhugula init --reverify`. `arhugula init --reverify` and `<home>/kit/init --reverify` do the same.
 - **Status:** not witnessed on a deployment. The self-test does not exercise P18, because breaking the document would break the real environment.
 
 The same line can name other causes:
@@ -229,7 +236,7 @@ RT-FAIL-FALLBACK-EXHAUSTED: fallback chain exhausted after candidate <provider>:
         exit 1: detail:    workflow execution returned status='failed' with fail_class='step-failure: RT-FAIL-STEP-DISPATCH-TIMEOUT: step dispatch exceeded 0.01s boun
 ```
 
-- **Cause:** one step took longer than the per-step deadline, `step_dispatch_timeout_seconds`. Slow local models are the usual reason.
+- **Cause:** one step took longer than the per-step deadline, `step_dispatch_timeout_seconds`. Slow local models are the usual reason. A wait at an approval gate counts too: a gate answered after 45 seconds failed its run with `step dispatch exceeded 30.0s bound` (*witnessed*).
 - **Fix:** raise the deadline. `arhugula feature enable deadlines` sets it to 120 seconds. `arhugula config set step_dispatch_timeout_seconds <seconds>` sets any value.
 - **Prevent:** `arhugula feature list` shows whether `deadlines` is on. Without it, the deadline is 30 seconds. Raise it before you run a workflow on a slow model.
 - **Status:** *witnessed* in `doctor --self-test`.
@@ -285,6 +292,30 @@ RT-FAIL-PROMPT-SELECTION-UNAUTHORED: prompt-selection binding names version_sha=
 - **Fix:** `arhugula prompt list` shows the authored versions. Author the missing one with `arhugula prompt author <label> --file <file>`, or select an existing one with `arhugula prompt select <workload> <version>`.
 - **Prevent:** select versions with `arhugula prompt select`. It looks the version up among the authored ones before it stores the selection.
 - **Status:** *witnessed* in `doctor --self-test`.
+
+### `CancelledError: Cancelled via cancel scope`: stdio and HTTP MCP clients together
+
+The run serves its tool calls. Then it prints a Python traceback where the `status:` line belongs, and it exits 1. The traceback ends with:
+
+```text
+asyncio.exceptions.CancelledError: Cancelled via cancel scope 10f0f7410 by <Task pending name='Task-1' coro=<run() running at <home>/env/lib/python3.12/site-packages/harness_runtime/api.py:859> cb=[_run_until_complete_cb() at .../lib/python3.12/asyncio/base_events.py:181]>
+```
+
+- **Cause:** the configuration holds a stdio MCP client and an HTTP MCP client at the same time. One example is isolation tier 3's `sandbox-echo`, a stdio client, together with a client added by `arhugula mcp add <name> --url <url>`. The runtime fails while it shuts its MCP clients down when the run ends (*upstream limit*). Every run fails this way, even a workflow that uses only one of the two clients. With either client alone, the same workflow ends `status: completed`.
+- **Fix:** keep one kind of client configured at a time. `arhugula mcp list` shows which clients are configured and the transport of each. `arhugula isolation disable` removes the tier-3 stdio client. `arhugula mcp remove <name>` removes one client by name.
+- **Prevent:** run `arhugula mcp list` before you turn tier 3 on or add a client.
+- **Status:** *witnessed* on `arhugula run`, for a workflow that uses both clients and for one that uses only the stdio client. The same error was seen on `hold` and on `resume` in an earlier session; that transcript was not kept. The upstream issue reference is in [known gaps](reference/known-gaps.md).
+
+### Messages explained on other pages
+
+These four messages have their explanation on the page of the feature that raises them.
+
+| Message | Cause | Read |
+| --- | --- | --- |
+| `SandboxDriverUnavailableError: resolved sandbox tier 'tier-2-container' requires an execution driver`, after `RT-FAIL-BOOTSTRAP` | An MCP client resolves to a sandbox tier that has no driver on this deployment, for example a URL client declared `LOCAL_MUTATION`. The runtime refuses every run at its start, with exit code 4 (*witnessed*). Fix: `arhugula mcp remove <name>`. | [Declare how far you trust an MCP server](security-and-isolation.md#declare-how-far-you-trust-an-mcp-server) |
+| `RT-FAIL-PROMPT-INJECTION-CONFLICT` | A step payload carries a system prompt while a prompt version is active. | [Write a step payload for your provider family](authoring.md#write-a-step-payload-for-your-provider-family) |
+| `RT-FAIL-PROMPT-VERSION-UNAPPROVED` | The selected prompt version is not on the approved list of a deployment that requires approval. | [Approve a version](prompts-skills-validators.md#approve-a-version) |
+| `RT-FAIL-CLI-DAEMON-RESULT` | The client of a daemon run got no result, for example after its wait of one hour. | [Run workflows through the daemon](operate.md#run-workflows-through-the-daemon) |
 
 ## Gates and resume
 
@@ -526,16 +557,17 @@ arhugula: <new-home> is too long a path for the virtual machine: macOS limits a 
 
 There is no message. The Grafana panels that plot metrics show no data.
 
-- **Cause:** after Tempo restarts, its metrics generator has nothing to plot until a new span arrives (*upstream limit* of Tempo's generator).
+- **Cause:** after Tempo restarts, its metrics generator has nothing to plot until a new span arrives. This is a limit of Tempo, not of the harness.
 - **Fix:** run any workflow, for example `arhugula run ollama-first.toml --provider ollama`. The panels fill from that run on.
 - **Prevent:** nothing prevents it. Expect it whenever Tempo has restarted.
-- **Status:** an *upstream limit* listed in [known gaps](reference/known-gaps.md).
+- **Status:** a limit of Tempo, listed in [known gaps](reference/known-gaps.md).
 
 ## Audit verification
 
 ### A ledger that began unsigned: `UNVERIFIED`, no cutover record, `signature-invalid`
 
-`arhugula audit verify --signatures` refuses a ledger that began unsigned:
+`arhugula audit verify` runs the full check, signatures included, on every ledger that has a cutover record and a key map. The flag `--signatures` only requires that check.
+So `arhugula audit verify --signatures` refuses a ledger that began unsigned:
 
 ```text
 arhugula: <project> has no cutover record (<state-directory>/state-ledger/audit-cutover-record.json). The runtime writes it at the first run of a ledger while signing is on; a ledger that began unsigned has none and cannot be signature-verified
@@ -563,9 +595,10 @@ harness-inspect exit 4: verification ran and FAILED; the message above names the
 ```
 
 - **Cause:** a ledger that held entries before signing was turned on keeps those unsigned entries for ever. An unsigned entry never verifies (*upstream limit*); the runtime's name for that failure is `signature-invalid`. Such a ledger also has no cutover record, which is the signed note of where signing began.
-- **Fix:** verify the hash chain with `arhugula audit verify`, without `--signatures`. That check still proves that no entry was changed or removed. A project that you attach after signing is on verifies in full.
+  Writing a cutover record over such a ledger afterwards does not repair it. Upstream's `harness migrate-audit-sidecar --author` writes one, and verification then fails with `signature-invalid` on the unsigned entries (*witnessed*).
+- **Fix:** verify the hash chain with `arhugula audit verify`, without `--signatures`. That check still proves that no entry was changed or removed. Do not author a cutover record for such a ledger: `audit verify` then always runs the full check, and that check fails. A project that you attach after signing is on verifies in full.
 - **Prevent:** turn signing on at init (feature `s`), or run `arhugula audit keygen` and `arhugula audit enable` before a project's first run. See [security and isolation](security-and-isolation.md).
-- **Status:** the status table is *witnessed*. The refusal and the two exit-code lines were read in the code.
+- **Status:** the status table is *witnessed*, and so is the `signature-invalid` failure after `--author`. The refusal and the two exit-code lines were read in the code.
 
 If the message is `there is no key map at <home>/keys/signing-key-map.json`, run `arhugula audit keygen`.
 
@@ -598,6 +631,22 @@ arhugula: a harness daemon is running (pid <pid>); stop it before you upgrade
 
 `arhugula daemon start` on a project whose daemon already runs prints `the daemon for <project> is already running (pid <pid>)`. Nothing is wrong: use the running one.
 
+## Upgrade and rollback
+
+The upgrade, its steps and the install's exit codes are in [upgrade](upgrade.md).
+
+### `there is no complete earlier environment`: nothing to roll back to
+
+```text
+arhugula: there is no complete earlier environment at <home>/env.rollback to return to
+  fix: arhugula upgrade --pin <sha> installs any commit again
+```
+
+- **Cause:** `arhugula upgrade --rollback` found no earlier environment that holds its commit record, `<home>/env.rollback/.arhugula-pin`. No upgrade or rebuild has finished on this deployment yet, or the copy was removed. The rollback exits 3 and changes nothing. A failed or interrupted install is not the cause: it keeps the rollback copy.
+- **Fix:** name the commit that you want: `arhugula upgrade --pin <sha>`.
+- **Prevent:** `cat <home>/env.rollback/.arhugula-pin` prints the commit that a rollback returns to. When that file is missing, there is nothing to return to.
+- **Status:** read in the code; not witnessed.
+
 ## Sources
 
 Kit modules, under `<home>/kit`:
@@ -609,7 +658,7 @@ Kit modules, under `<home>/kit`:
 - `lib/arhugula_kit/providers.py`: provider states, notes and fixes.
 - `lib/arhugula_kit/vm.py`, `lib/arhugula_kit/observability.py`, `lib/arhugula_kit/questions.py`: the VM and stack messages.
 - `lib/arhugula_kit/verbs_authoring.py`: the audit messages.
-- `lib/arhugula_kit/daemon.py`, `lib/arhugula_kit/verbs_lifecycle.py`: the daemon messages.
+- `lib/arhugula_kit/daemon.py`, `lib/arhugula_kit/verbs_lifecycle.py`: the daemon messages and the rollback refusal.
 - `lib/arhugula_kit/common.py`: the manifest lookup.
 
 Upstream documents and sources, under `<home>/upstream`:
@@ -621,3 +670,4 @@ Upstream documents and sources, under `<home>/upstream`:
 - `harness-runtime/src/harness_runtime/lifecycle/prompt_selection.py`: `RT-FAIL-PROMPT-SELECTION-UNAUTHORED`.
 - `harness-runtime/src/harness_runtime/lifecycle/operator_input.py` and `hitl_gate_composer.py`: the two gate rejections.
 - `harness-runtime/src/harness_runtime/cli/app.py`: the daemon connection failure.
+- `harness-runtime/src/harness_runtime/lifecycle/mcp_client_host.py`: the MCP client shutdown that raises `CancelledError`.

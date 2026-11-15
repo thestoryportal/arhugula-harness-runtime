@@ -19,8 +19,8 @@ Upstream pin: `0a75b1d06707faebee892f8f55ee04f1a2b20b28`
 
 The list follows the feature groups of [the kit overview](README.md).
 
-- **Install and operate.** `init` checks every dependency, asks 14 questions, runs 18 preflight checks, installs the pin and runs smoke workflows. The `arhugula` command does everything after that.
-- **Providers.** Four subscription command-line providers, two hosted API providers with keys in the macOS keychain, and local Ollama.
+- **Install and operate.** `init` checks every dependency, asks 14 questions, runs 18 preflight checks, installs the pin and runs smoke workflows. The `arhugula` command does everything after that, and `arhugula --version` prints the kit version and the upstream pin.
+- **Providers.** Four subscription command-line providers, two hosted API providers with keys in the macOS keychain, and local Ollama, with `arhugula provider ollama-host` to set its address.
 - **Routing.** One fallback chain serves every step, with overrides for one run and verbs for finer routing.
 - **Topologies and multi-agent execution.** The six upstream topologies, and `arhugula workflow new` to create a manifest from one.
 - **Approval gates.** Gates that ask at the terminal, and a policy for what a gate approves without asking.

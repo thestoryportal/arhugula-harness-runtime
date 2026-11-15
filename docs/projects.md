@@ -131,7 +131,8 @@ ledger:    908a011ae8a390f8409d9506a677ee20cefa9a91d1c206f04b6f3925fa5d1eb3
 ```
 
 `--project` chooses the project for one command.
-Without it, a verb acts on the current project.
+Without it, most verbs act on the current project.
+The exceptions are in [Choose where a change applies](prompts-skills-validators.md#choose-where-a-change-applies).
 `--provider ollama` sends every step of this run to Ollama first: see [Choose providers and routing](providers.md).
 
 ## Know what the harness writes in your repository
@@ -200,6 +201,8 @@ The kit can write a section into both files, so that the agent knows the project
 | Print the section without writing it | `arhugula agent context show --project <project>` |
 | Write or refresh the section | `arhugula agent context install --project <project>` |
 | Take the section out | `arhugula agent context remove --project <project>` |
+
+The home needs no such section: `init` writes an `AGENTS.md` and a `CLAUDE.md` there that point to the kit's own files, as the [agents page](agents.md) explains.
 
 The section sits between two marker comments, `<!-- arhugula-harness:begin -->` and `<!-- arhugula-harness:end -->`.
 `install` replaces only the text between the markers and leaves the rest of each file alone.

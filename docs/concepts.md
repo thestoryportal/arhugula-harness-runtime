@@ -84,7 +84,7 @@ flowchart LR
 | `dist/` | The seven built packages and two lock files with hashes. | The install. |
 | `config/` | `init-answers.json`, and the `*.toml` files generated from it. | Init and the verbs. |
 | `bin/arhugula` | The command, as a link into `kit/`. | Init. |
-| `keys/`, `secrets/` | Signing keys, and the Grafana password. | `arhugula audit keygen`, and the observability setup. |
+| `keys/`, `secrets/` | Signing keys, and the Grafana password. | Init or `arhugula audit keygen`, and the observability setup. |
 | `backups/` | Archives of the state root. | `arhugula state backup`. |
 | `state/` | The state root: ledgers, memory, pause journals and the local span store. | The runtime. |
 | `logs/` | Install logs and one log per run. | The install and `arhugula run`. |
@@ -98,6 +98,7 @@ The layout sets these rules:
 - **One source of configuration:** `config/init-answers.json` holds your answers. Every `*.toml` file is generated from it, so you change a setting with a verb and never by editing a file.
 - **Nothing to edit under the install:** an install or an upgrade checks out `upstream/` at the pinned commit and replaces `env/` whole. The install refuses an `upstream/` whose tracked files you changed.
 - **Keys never leave:** `keys/` and `secrets/` are never in git and never in a backup. API keys are not in the home at all: they live in the macOS keychain.
+- **Two caches stay outside:** uv and Lima keep their download caches in their own directories, outside the home.
 
 ## One install serves many projects
 
@@ -116,7 +117,8 @@ The harness is not copied into the project. Each attached project gets its own g
 | The project's config | `<home>/config/projects/<project>.toml` |
 | The project's ledger and memory | `<home>/state/projects/<project>/` |
 
-One project is the *current project*. A verb acts on it unless you pass `--project <project>`.
+One project is the *current project*. Most verbs act on it unless you pass `--project <project>`.
+The `prompt` verbs, `validator list`, `bind` and `unbind`, and `config set` and `unset` act on every config of the deployment instead: see [Choose where a change applies](prompts-skills-validators.md#choose-where-a-change-applies).
 When no project is current, or when you pass `--project default`, a verb acts on the *deployment default*.
 The deployment default uses `<home>/config/harness.toml`, keeps its state directly in `<home>/state`, and runs in `<home>/upstream`.
 
@@ -162,10 +164,12 @@ Details: [workflows](workflows.md) and [authoring](authoring.md).
 ## One rule decides which provider serves a step
 
 The routing rule: the config's first fallback chain serves every step; `--provider` (and `--model`) override it for one run; a manifest's own model binding does not select the provider.
+A more specific setting wins over the chain: a per-step `model_binding` in a manifest, a workload override or a role binding.
+See [How routing picks a provider](providers.md#how-routing-picks-a-provider).
 
 A fallback chain is a default provider with its model, and the fallback provider that takes over when the default fails.
 You choose both at init, at questions 3 and 4.
-A manifest also carries a model binding, but the runtime treats it as a description.
+A manifest also carries a `[default_model_binding]` table, but the runtime treats it as a description.
 So an example written for Ollama runs on your default provider unless you pass `--provider ollama`.
 
 This command shows the chain:
@@ -236,6 +240,8 @@ ledger:    1736ee1536a512c4e35391512d32583d2110311ddc30511bb2fed31378eeb0a1
 
 That run added three entries to the ledger: a cost entry, an audit entry and an entry for the step.
 A call through a signed-in command-line provider is never priced, so it writes no cost entry (*upstream limit*, by design).
+A run on Claude Code wrote its step entries to the ledger, and no cost entry and no audit entry (*witnessed*; upstream issue #1743 covers both missing entries).
+The `ledger:` line prints the hash of the newest audit entry, so that run left it unchanged, while `arhugula status` showed the new head of the ledger.
 
 Details: [operate](operate.md).
 
@@ -258,8 +264,8 @@ The runtime guards the state root:
 
 - **It stamps the root:** the runtime marks a state root that it accepted, and it refuses a root that holds files it did not stamp.
 - **It refuses risky places:** it refuses a state root inside a git checkout, and inside a backup location that could restore over it. Init asks for those locations at question 13.
-- **The hash chain always verifies:** `arhugula audit verify` checks the chain of a ledger.
-- **Signatures are optional:** with audit signing on, each audit entry is also signed with a local key. A ledger that began unsigned keeps hash-chain verification only (*upstream limit*).
+- **Every ledger has a hash chain:** `arhugula audit verify` checks the chain of a ledger. For a ledger signed from its first entry, it also checks every signature.
+- **Signatures are optional:** with audit signing on, each audit entry is also signed with a local key. A ledger that began unsigned keeps hash-chain verification only (*upstream limit*). Authoring a cutover record over it afterwards was tried, and verification then fails with `signature-invalid` (*witnessed*).
 
 This command shows the state root, its size and each project's ledger. It changes nothing:
 

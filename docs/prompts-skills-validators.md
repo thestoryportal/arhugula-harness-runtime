@@ -137,7 +137,7 @@ The approval list holds the versions an operator has approved.
 arhugula prompt approve v2 --project <project>
 ```
 
-The runtime reads the list only at a persona that requires approval.
+The runtime reads the list only at a persona that requires approval, and it takes that persona from the deployment's config, not from a workflow file's `persona_tier`.
 In this kit that is the team persona, which the feature `persona-team` switches on.
 A deployment with the default solo-developer persona runs a selected version without approval.
 With the team persona, the runtime refuses a selected version that is not on the list, with `RT-FAIL-PROMPT-VERSION-UNAPPROVED`.
@@ -199,6 +199,7 @@ arhugula skill add <home>/kit/examples/skills --project <project>
 
 The command copies every pair of files in the directory.
 It refuses a directory that holds no `.skill.json` file, a `.skill.json` file without its `.SKILL.md` file, and a file that already exists in the project.
+It checks every pair before it copies the first file, so a refusal copies nothing.
 Each refusal ends with exit code 3.
 
 List the skills of the project:
@@ -224,6 +225,7 @@ Look at the last line of the list: a loaded skill reaches no agent until a hook 
 
 *Upstream limit:* the runtime accepts the hook only as a Python object, which a TOML file cannot carry.
 *Kit extension:* `arhugula skill hook set` stores the hook's name, and `arhugula run` attaches the hook when it starts the runtime.
+`arhugula daemon start` attaches it too, so a run that you send with `--daemon` gets the same skills.
 
 | Command | Result |
 | --- | --- |
@@ -232,6 +234,8 @@ Look at the last line of the list: a loaded skill reaches no agent until a hook 
 | `arhugula skill hook clear` | No skill is activated. |
 
 One hook serves the whole deployment, so these commands take no `--project`.
+`arhugula skill hook set` imports and builds the class before it stores the name.
+It refuses a class it cannot import or build, with exit code 3, and stores nothing.
 
 ## Manage validators
 
@@ -276,7 +280,7 @@ arhugula validator bind ask-local-model example_validators:MaxCharsValidator --p
 
 The command imports and builds the class before it stores the binding.
 It refuses a class it cannot import or build, with exit code 3, and stores nothing.
-The directory you pass with `--pythonpath` stays on the deployment's import path after you unbind.
+The directory you pass with `--pythonpath` stays on the deployment's import path after you unbind, and no command removes it.
 
 Check the binding without calling a provider:
 
@@ -309,6 +313,10 @@ Remove the binding, so that later runs of this step pass again:
 ```sh
 arhugula validator unbind ask-local-model --project <project>
 ```
+
+When you unbind the last binding of a scope, the command removes that scope's whole `validator_framework_config` table.
+Any other setting you stored in that table with `arhugula config set` goes with it.
+[The known gaps page](reference/known-gaps.md) lists the limits of the kit's commands.
 
 ## Recognise the three refusals
 
